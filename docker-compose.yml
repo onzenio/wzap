@@ -1,0 +1,67 @@
+name: wzap
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wzap
+      POSTGRES_USER: wzap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-wzap.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wzap -d wzap"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  wzap:
+    image: wzap:dev
+    build: .
+    restart: unless-stopped
+    environment:
+      WZAP_SERVICE_TOKEN: ${WZAP_SERVICE_TOKEN:-dev-wzap-token}
+      WZAP_DATABASE_URL: postgres://wzap:${POSTGRES_PASSWORD:-secret}@postgres:5432/wzap?sslmode=disable
+      WZAP_NATS_URL: nats://nats:4222
+      WZAP_PUBLIC_URL: http://127.0.0.1:8081
+      WZAP_AUTO_MIGRATE: "true"
+      WZAP_DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - media:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/wzap", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  pgdata:
+  natsdata:
+  media:

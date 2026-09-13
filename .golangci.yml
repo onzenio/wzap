@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck # no v2 inclui os checks do gosimple (linters unificados)
+    - errcheck
+    - ineffassign
+    - unused

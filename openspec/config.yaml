@@ -1,0 +1,38 @@
+schema: spec-driven
+
+context: |
+  Project: standalone Go 1.26 service for multi-instance WhatsApp connectivity.
+  Interfaces: authenticated REST API, versioned NATS JetStream events, and Postgres persistence.
+  Tests: Go unit tests plus optional Postgres integration tests selected by WZAP_TEST_DATABASE_URL.
+  Quality gates: gofmt, go vet, golangci-lint v2.13.2, go test ./..., and go build ./....
+  Boundaries: consumers own users, tenants, accounts, and business rules; wzap exposes opaque instance external_ref values only.
+  Workflow: OpenSpec owns WHAT+WHY; Superpowers owns implementation quality through TDD, debugging, review, and verification.
+  Homes: all change artifacts live in openspec/changes/<name>/ and archived capability specs live in openspec/specs/.
+
+rules:
+  proposal:
+    - "Always include Out-of-Scope: what this change explicitly does NOT do"
+    - Mark breaking REST or event contract changes with **BREAKING**
+  specs:
+    - One spec file per capability listed in the proposal
+    - Every requirement has at least one WHEN/THEN scenario
+    - Describe observable behavior only, not Go package names or implementation steps
+  design:
+    - Record key technical choices with rationale and alternatives considered
+    - Record risks as [Risk] -> Mitigation
+    - Preserve boundaries between transport, domain services, sessions, events, media, and storage
+  tasks:
+    - "tasks.md is the scope contract: one sentence per task, checkbox format `- [ ] X.Y ...`"
+    - Each task states its verification command or observable behavior
+    - Keep implementation detail in plan.md, referenced by task ID
+
+operations:
+  apply:
+    guidance:
+      - "Follow TDD for behavior changes: failing test first, then minimal implementation"
+      - Use systematic-debugging on failures and verification-before-completion before claiming done
+      - Run focused tests during development and the complete quality gates before completion
+  archive:
+    guidance:
+      - Archive only after all tasks and required verification are complete
+      - Sync delta specs into openspec/specs/ before closing the change
