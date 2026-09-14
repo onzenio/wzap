@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/swaggo/http-swagger"
+
+	_ "wzap/docs"
 	"wzap/internal/config"
 	"wzap/internal/storage"
 )
@@ -34,15 +37,18 @@ type Deps struct {
 }
 
 // New builds the HTTP server with the middleware chain, the exact public
-// health endpoints and the authenticated API sub-mux mounted at /.
+// health endpoints, the public swagger UI subtree and the authenticated API
+// sub-mux mounted at /.
 //
-// The only exact publics are GET /healthz and GET /readyz. /swagger/ and
-// /manager/ (plus static assets) stay unregistered until tasks 5.2 and 6.6
-// own them, so no stub is mounted for them here.
+// The only exact publics are GET /healthz and GET /readyz. /swagger/ is the
+// public Swagger UI subtree (no credential): it is more specific than the "/"
+// below, so longest-prefix routing keeps it outside Authenticate. /manager/
+// stays unregistered until task 6.6 owns it, so no stub is mounted for it here.
 func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(deps.ReadyChecker, log))
+	mux.Handle("/swagger/", httpSwagger.WrapHandler)
 
 	// The legacy /api/v1 prefix is gone: every path under it answers the
 	// shared 404 envelope, with or without credential. This subtree pattern

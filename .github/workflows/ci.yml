@@ -50,5 +50,10 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Swagger docs freshness
+        run: |
+          go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --parseInternal -g internal/httpapi/swagger.go -o docs
+          git diff --exit-code -- docs/
+
       - name: Build
         run: go build ./...
