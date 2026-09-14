@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -68,6 +69,20 @@ func (f *fakeUserRepo) Delete(_ context.Context, id uuid.UUID) error {
 }
 
 func (f *fakeUserRepo) Count(_ context.Context) (int, error) { return len(f.users), nil }
+
+func (f *fakeUserRepo) UpdateQuota(_ context.Context, id uuid.UUID, quota int) error {
+	user, ok := f.byID[id]
+	if !ok {
+		return fmt.Errorf("update user quota: %w", storage.ErrNotFound)
+	}
+	user.InstanceQuota = quota
+	for i := range f.users {
+		if f.users[i].ID == id {
+			f.users[i].InstanceQuota = quota
+		}
+	}
+	return nil
+}
 
 // fakeKeyRepo is an in-memory storage.APIKeyRepository recording stored hashes.
 type fakeKeyRepo struct {

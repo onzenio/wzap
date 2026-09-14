@@ -13,6 +13,7 @@ import (
 	"wzap/internal/auth"
 	"wzap/internal/instance"
 	"wzap/internal/model"
+	"wzap/internal/storage"
 )
 
 const (
@@ -95,8 +96,16 @@ type updateInstanceRequest struct {
 // what it creates (sending owner_user_id is an admin/global privilege and
 // answers 403); the global scope and admin sessions create for the requested
 // owner_user_id when given and for the oldest admin otherwise (500 when no
-// admin exists). An override matching no user answers 422.
-func handleCreateInstance(instances InstanceService) http.HandlerFunc {
+// admin exists). An override matching no user answers 422. After owner
+// resolution and before Create, a non-admin user session faces the quota
+// pre-checks: the global ceiling (CountAll >= MaxInstances when MaxInstances
+// is positive) then the owner's stored per-user quota (CountByOwner >=
+// quota when the stored quota is positive; a stored 0 means unlimited and
+// WZAP_DEFAULT_USER_INSTANCE_QUOTA is never consulted here). Either breach
+// answers 403 quota_exceeded. The global scope and admin sessions bypass both
+// checks. The check-then-insert race is accepted at product scale (R19): two
+// concurrent creates may both pass and both insert; no locking is built.
+func handleCreateInstance(instances InstanceService, users storage.UserRepository, keys storage.APIKeyRepository, maxInstances int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := authorizeCollection(r); err != nil {
 			writeForbidden(w, r)
@@ -147,6 +156,11 @@ func handleCreateInstance(instances InstanceService) http.HandlerFunc {
 			return
 		}
 
+		if err := checkCreateQuotas(r, scope, owner, users, keys, maxInstances); err != nil {
+			writeQuotaError(w, r, err)
+			return
+		}
+
 		created, key, err := instances.Create(r.Context(), instance.CreateInput{
 			Name:        request.Name,
 			ExternalRef: request.ExternalRef,
@@ -158,6 +172,71 @@ func handleCreateInstance(instances InstanceService) http.HandlerFunc {
 		}
 		JSON(w, http.StatusCreated, newCreateInstanceResponse(created, key))
 	}
+}
+
+// errQuotaExceeded reports that a create-time quota check denied the request.
+// The handler maps it to 403 quota_exceeded.
+var errQuotaExceeded = errors.New("quota exceeded")
+
+// checkCreateQuotas enforces the global and per-user instance quotas for a
+// non-admin user session creating for owner. Admin-equivalent creators (the
+// global scope or an admin session) skip both checks entirely. The counts are
+// unfiltered: every existing instance counts, any state. A non-positive
+// MaxInstances disables the global check and a stored per-user quota of 0
+// means unlimited for that check; the creation-time default quota is never
+// consulted here. A nil keys or users dependency skips its check so handlers
+// wired without quota deps stay permissive.
+func checkCreateQuotas(r *http.Request, scope auth.Scope, owner uuid.UUID, users storage.UserRepository, keys storage.APIKeyRepository, maxInstances int) error {
+	if err := auth.RequireRole(scope, "admin"); err == nil {
+		return nil
+	}
+	if scope.Kind != auth.ScopeUser {
+		return nil
+	}
+
+	if keys != nil && maxInstances > 0 {
+		total, err := keys.CountAll(r.Context())
+		if err != nil {
+			return err
+		}
+		if total >= maxInstances {
+			return errQuotaExceeded
+		}
+	}
+
+	if users == nil || keys == nil {
+		return nil
+	}
+	ownerUser, err := users.GetByID(r.Context(), owner)
+	if err != nil {
+		// An unknown owner stays the service's 422: skip the per-user check
+		// and let Create validate the owner.
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if ownerUser.InstanceQuota <= 0 {
+		return nil
+	}
+	owned, err := keys.CountByOwner(r.Context(), owner)
+	if err != nil {
+		return err
+	}
+	if owned >= ownerUser.InstanceQuota {
+		return errQuotaExceeded
+	}
+	return nil
+}
+
+// writeQuotaError maps a quota pre-check failure to its HTTP status: a breach
+// answers 403 quota_exceeded, anything else a 500 without leaking its cause.
+func writeQuotaError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errQuotaExceeded) {
+		Error(w, r, http.StatusForbidden, "quota_exceeded", "quota exceeded")
+		return
+	}
+	Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 }
 
 // handleListInstances answers one page of instances with its next cursor. An

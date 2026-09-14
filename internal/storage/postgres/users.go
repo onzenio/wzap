@@ -113,6 +113,20 @@ func (r *UserRepository) Count(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// UpdateQuota stores a new per-user instance quota (0 means unlimited). It
+// returns storage.ErrNotFound when the user does not exist.
+func (r *UserRepository) UpdateQuota(ctx context.Context, id uuid.UUID, quota int) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE users SET instance_quota = $2, updated_at = now() WHERE id = $1`, id, quota)
+	if err != nil {
+		return fmt.Errorf("update user quota: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("update user quota: %w", storage.ErrNotFound)
+	}
+	return nil
+}
+
 func scanUser(scanner rowScanner) (*model.User, error) {
 	var user model.User
 	if err := scanUserRow(scanner, &user); err != nil {

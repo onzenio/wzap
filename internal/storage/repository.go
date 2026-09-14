@@ -150,6 +150,9 @@ type UserRepository interface {
 	List(ctx context.Context) ([]model.User, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	Count(ctx context.Context) (int, error)
+	// UpdateQuota stores a new per-user instance quota. A stored 0 means
+	// unlimited. It reports ErrNotFound when the user does not exist.
+	UpdateQuota(ctx context.Context, id uuid.UUID, quota int) error
 }
 
 // APIKeyRepository manages the instance key hashes used to authenticate

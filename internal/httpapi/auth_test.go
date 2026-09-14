@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +74,15 @@ func (f *fakeUserRepository) Delete(_ context.Context, id uuid.UUID) error {
 }
 
 func (f *fakeUserRepository) Count(context.Context) (int, error) { return len(f.byID), nil }
+
+func (f *fakeUserRepository) UpdateQuota(_ context.Context, id uuid.UUID, quota int) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return fmt.Errorf("update user quota: %w", storage.ErrNotFound)
+	}
+	u.InstanceQuota = quota
+	return nil
+}
 
 const testJWTSecret = "test-jwt-secret-that-is-long-enough"
 

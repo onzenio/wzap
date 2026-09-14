@@ -52,7 +52,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	}))
 
 	api := http.NewServeMux()
-	api.HandleFunc("POST /instances", handleCreateInstance(deps.Instances))
+	api.HandleFunc("POST /instances", handleCreateInstance(deps.Instances, deps.Users, deps.Keys, cfg.MaxInstances))
 	api.HandleFunc("GET /instances", handleListInstances(deps.Instances))
 	api.HandleFunc("GET /instances/{id}", handleGetInstance(deps.Instances))
 	api.HandleFunc("PATCH /instances/{id}", handleUpdateInstance(deps.Instances))
@@ -71,6 +71,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /instances/{id}/messages", handleListMessages(deps.Instances, deps.Messages))
 	api.HandleFunc("GET /instances/{id}/messages/{message_id}", handleGetMessage(deps.Instances, deps.Messages))
 	api.HandleFunc("GET /media/{id}", handleGetMedia(deps.Instances, deps.Media))
+	api.HandleFunc("PATCH /users/{id}", handleUpdateUserQuota(deps.Users))
 	// "/" is the least-specific outer pattern, so Authenticate runs before
 	// the api mux sees the request: an unknown path without credential
 	// answers 401 here, while the same path with a valid credential falls
