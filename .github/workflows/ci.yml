@@ -57,3 +57,31 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  manager:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: manager/pnpm-lock.yaml
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install
+        run: pnpm --dir manager install --frozen-lockfile
+
+      - name: Build
+        run: pnpm --dir manager build
+
+      - name: Static output present
+        run: test -f manager/.output/public/index.html
