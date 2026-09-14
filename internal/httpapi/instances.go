@@ -46,13 +46,17 @@ type InstanceService interface {
 var _ InstanceService = (*instance.Service)(nil)
 
 // instanceResponse is the JSON representation of an instance. It carries the
-// owner on every read but never the instance API key: the key is returned in
-// clear exactly once by the create response below.
+// owner and the webhook configuration on every read but never the instance
+// API key: the key is returned in clear exactly once by the create response
+// below. A null webhook_url means no webhook is configured.
 type instanceResponse struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
 	ExternalRef     string     `json:"external_ref"`
 	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
+	WebhookURL      *string    `json:"webhook_url"`
+	WebhookEnabled  bool       `json:"webhook_enabled"`
+	WebhookEvents   []string   `json:"webhook_events"`
 	Status          string     `json:"status"`
 	WhatsAppJID     string     `json:"whatsapp_jid"`
 	LastError       string     `json:"last_error"`
@@ -76,18 +80,28 @@ type instanceListResponse struct {
 
 // createInstanceRequest is the POST /instances payload. OwnerUserID is a
 // pointer so an absent field is distinct from an explicit value: only the
-// global scope and admin sessions may send it.
+// global scope and admin sessions may send it. The webhook fields follow the
+// same absent-versus-explicit rule: omitted events default to every type,
+// while an omitted URL stays unset.
 type createInstanceRequest struct {
-	Name        string  `json:"name"`
-	ExternalRef string  `json:"external_ref"`
-	OwnerUserID *string `json:"owner_user_id"`
+	Name           string    `json:"name"`
+	ExternalRef    string    `json:"external_ref"`
+	OwnerUserID    *string   `json:"owner_user_id"`
+	WebhookURL     *string   `json:"webhook_url"`
+	WebhookEnabled *bool     `json:"webhook_enabled"`
+	WebhookEvents  *[]string `json:"webhook_events"`
 }
 
 // updateInstanceRequest uses pointers so an omitted field keeps its stored
-// value while an explicit empty external_ref clears it.
+// value while an explicit empty external_ref clears it. The webhook fields
+// behave the same: omitted keeps the stored configuration, an explicit empty
+// URL unsets it, and an explicit empty events list clears the subscription.
 type updateInstanceRequest struct {
-	Name        *string `json:"name"`
-	ExternalRef *string `json:"external_ref"`
+	Name           *string   `json:"name"`
+	ExternalRef    *string   `json:"external_ref"`
+	WebhookURL     *string   `json:"webhook_url"`
+	WebhookEnabled *bool     `json:"webhook_enabled"`
+	WebhookEvents  *[]string `json:"webhook_events"`
 }
 
 // handleCreateInstance registers an instance, assigns its owner and answers
@@ -163,9 +177,12 @@ func handleCreateInstance(instances InstanceService, users storage.UserRepositor
 		}
 
 		created, key, err := instances.Create(r.Context(), instance.CreateInput{
-			Name:        request.Name,
-			ExternalRef: request.ExternalRef,
-			OwnerUserID: &owner,
+			Name:           request.Name,
+			ExternalRef:    request.ExternalRef,
+			OwnerUserID:    &owner,
+			WebhookURL:     request.WebhookURL,
+			WebhookEnabled: request.WebhookEnabled,
+			WebhookEvents:  request.WebhookEvents,
 		})
 		if err != nil {
 			writeInstanceError(w, r, err)
@@ -324,8 +341,11 @@ func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 		}
 
 		updated, err := instances.Update(r.Context(), id, instance.UpdateInput{
-			Name:        request.Name,
-			ExternalRef: request.ExternalRef,
+			Name:           request.Name,
+			ExternalRef:    request.ExternalRef,
+			WebhookURL:     request.WebhookURL,
+			WebhookEnabled: request.WebhookEnabled,
+			WebhookEvents:  request.WebhookEvents,
 		})
 		if err != nil {
 			writeInstanceError(w, r, err)
@@ -408,13 +428,22 @@ func writeJSONBodyError(w http.ResponseWriter, r *http.Request, err error) {
 	Error(w, r, http.StatusBadRequest, "invalid_request", "invalid request body")
 }
 
-// newInstanceResponse maps a stored instance to its JSON representation.
+// newInstanceResponse maps a stored instance to its JSON representation. A nil
+// stored events list is emitted as an empty array so the field keeps its array
+// shape on every read.
 func newInstanceResponse(inst *model.Instance) instanceResponse {
+	events := inst.WebhookEvents
+	if events == nil {
+		events = []string{}
+	}
 	return instanceResponse{
 		ID:              inst.ID.String(),
 		Name:            inst.Name,
 		ExternalRef:     inst.ExternalRef,
 		OwnerUserID:     inst.OwnerUserID,
+		WebhookURL:      inst.WebhookURL,
+		WebhookEnabled:  inst.WebhookEnabled,
+		WebhookEvents:   events,
 		Status:          inst.Status,
 		WhatsAppJID:     inst.WhatsAppJID,
 		LastError:       inst.LastError,
@@ -451,6 +480,8 @@ func writeInstanceError(w http.ResponseWriter, r *http.Request, err error) {
 		Error(w, r, http.StatusConflict, "conflict", "instance already connected")
 	case errors.Is(err, instance.ErrOwnerNotFound):
 		Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "unknown owner")
+	case errors.Is(err, instance.ErrInvalidWebhook):
+		Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "invalid webhook config")
 	case errors.Is(err, instance.ErrNoAdmin):
 		Error(w, r, http.StatusInternalServerError, "internal_error", "no admin user exists")
 	default:

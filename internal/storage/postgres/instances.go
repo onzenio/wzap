@@ -13,6 +13,7 @@ import (
 
 	"wzap/internal/model"
 	"wzap/internal/storage"
+	"wzap/internal/webhook"
 )
 
 const instanceColumns = `id, name, COALESCE(external_ref, '') AS external_ref, status, ` +
@@ -38,17 +39,22 @@ func NewInstanceRepository(pool *pgxpool.Pool) *InstanceRepository {
 	return &InstanceRepository{pool: pool}
 }
 
-// Create persists a new instance with its owner and returns it with database
-// timestamps. A nil OwnerUserID stores NULL (legacy rows); the service always
-// supplies an owner for new rows.
+// Create persists a new instance with its owner and webhook configuration and
+// returns it with database timestamps. A nil OwnerUserID stores NULL (legacy
+// rows); the service always supplies an owner for new rows. A nil WebhookURL
+// stores NULL (unset) and nil WebhookEvents fall back to the canonical
+// default, matching the migration defaults.
 func (r *InstanceRepository) Create(ctx context.Context, instance model.Instance) (*model.Instance, error) {
 	row := r.pool.QueryRow(ctx, `
-		INSERT INTO instances (id, name, external_ref, status, whatsapp_jid, last_connected_at, last_error, owner_user_id)
-		VALUES ($1, $2, NULLIF($3, ''), COALESCE(NULLIF($4, ''), 'disconnected'), NULLIF($5, ''), $6, NULLIF($7, ''), $8)
+		INSERT INTO instances (id, name, external_ref, status, whatsapp_jid, last_connected_at, last_error, owner_user_id,
+			webhook_url, webhook_enabled, webhook_events)
+		VALUES ($1, $2, NULLIF($3, ''), COALESCE(NULLIF($4, ''), 'disconnected'), NULLIF($5, ''), $6, NULLIF($7, ''), $8,
+			NULLIF($9, ''), $10, $11)
 		RETURNING `+instanceColumns,
 		instance.ID, instance.Name, instance.ExternalRef, instance.Status,
 		instance.WhatsAppJID, instance.LastConnectedAt, instance.LastError,
-		instance.OwnerUserID,
+		instance.OwnerUserID, webhookURLParam(instance.WebhookURL),
+		instance.WebhookEnabled, webhookEventsParam(instance.WebhookEvents),
 	)
 
 	created, err := scanInstance(row)
@@ -122,16 +128,20 @@ func (r *InstanceRepository) List(ctx context.Context, limit int, cursor string)
 	return instances, nextCursor, nil
 }
 
-// Update persists the mutable fields of instance and returns the stored row.
+// Update persists the mutable fields of instance, including its webhook
+// configuration, and returns the stored row.
 func (r *InstanceRepository) Update(ctx context.Context, instance model.Instance) (*model.Instance, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE instances
 		SET name = $2, external_ref = NULLIF($3, ''), status = COALESCE(NULLIF($4, ''), status),
-		    whatsapp_jid = NULLIF($5, ''), last_connected_at = $6, last_error = NULLIF($7, ''), updated_at = now()
+		    whatsapp_jid = NULLIF($5, ''), last_connected_at = $6, last_error = NULLIF($7, ''),
+		    webhook_url = NULLIF($8, ''), webhook_enabled = $9, webhook_events = $10, updated_at = now()
 		WHERE id = $1
 		RETURNING `+instanceColumns,
 		instance.ID, instance.Name, instance.ExternalRef, instance.Status,
 		instance.WhatsAppJID, instance.LastConnectedAt, instance.LastError,
+		webhookURLParam(instance.WebhookURL), instance.WebhookEnabled,
+		webhookEventsParam(instance.WebhookEvents),
 	)
 
 	updated, err := scanInstance(row)
@@ -230,6 +240,25 @@ func scanInstanceRow(scanner rowScanner, instance *model.Instance) error {
 		&instance.OwnerUserID, &instance.WebhookURL, &instance.WebhookEnabled, &instance.WebhookEvents,
 		&instance.CreatedAt, &instance.UpdatedAt,
 	)
+}
+
+// webhookURLParam maps an unset webhook URL to NULL for the nullable column.
+func webhookURLParam(url *string) any {
+	if url == nil {
+		return nil
+	}
+	return *url
+}
+
+// webhookEventsParam keeps the NOT NULL events column satisfied: an explicit
+// empty subscription stores an empty array, while a nil slice (no writer ever
+// produces one — the service defaults absent events) falls back to the
+// canonical default instead of violating the constraint.
+func webhookEventsParam(events []string) []string {
+	if events == nil {
+		return webhook.DefaultEvents()
+	}
+	return events
 }
 
 func mapInstanceError(op string, err error) error {

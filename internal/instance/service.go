@@ -15,6 +15,7 @@ import (
 	"wzap/internal/model"
 	"wzap/internal/session"
 	"wzap/internal/storage"
+	"wzap/internal/webhook"
 )
 
 // Errors reported by the service and mapped to HTTP status codes by the
@@ -40,6 +41,11 @@ var (
 	// without an explicit owner. It is only reachable pre-seed and the
 	// handler maps it to 500: server state, not client error.
 	ErrNoAdmin = errors.New("no admin user exists")
+	// ErrInvalidWebhook reports that a webhook configuration failed
+	// validation (non-HTTP(S) URL, HTTP outside loopback, or an unknown event
+	// type). The handler maps it to 422 and the failed write persists
+	// nothing.
+	ErrInvalidWebhook = errors.New("invalid webhook config")
 )
 
 // ConnectResult is the outcome of a pairing request: the resulting status and,
@@ -58,18 +64,30 @@ type MediaRemover interface {
 
 // CreateInput is the payload accepted by Create. Name and ExternalRef are the
 // fields the REST contract exposes; OwnerUserID is resolved by the handler
-// from the request scope and is required non-nil at this boundary.
+// from the request scope and is required non-nil at this boundary. The webhook
+// fields are pointers so an absent field is distinct from an explicit value:
+// an absent URL stays unset, an absent enabled stays false, and absent events
+// default to every canonical type.
 type CreateInput struct {
-	Name        string
-	ExternalRef string
-	OwnerUserID *uuid.UUID
+	Name           string
+	ExternalRef    string
+	OwnerUserID    *uuid.UUID
+	WebhookURL     *string
+	WebhookEnabled *bool
+	WebhookEvents  *[]string
 }
 
 // UpdateInput is a partial update: nil fields keep their stored value, while an
-// explicit empty ExternalRef clears the reference.
+// explicit empty ExternalRef clears the reference. The webhook fields follow
+// the same rule: an absent URL, enabled, or events pointer leaves the stored
+// configuration untouched, while an explicit empty URL unsets it and an
+// explicit empty events list clears the subscription (delivering nothing).
 type UpdateInput struct {
-	Name        *string
-	ExternalRef *string
+	Name           *string
+	ExternalRef    *string
+	WebhookURL     *string
+	WebhookEnabled *bool
+	WebhookEvents  *[]string
 }
 
 // Service manages the lifecycle of WhatsApp instances over the instance
@@ -103,6 +121,20 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instanc
 	if input.OwnerUserID == nil {
 		return nil, "", fmt.Errorf("create instance: %w", ErrOwnerRequired)
 	}
+	// The webhook configuration is pure input validation and runs before any
+	// database read or write, so a 422 never partially persists.
+	rawURL := ""
+	if input.WebhookURL != nil {
+		rawURL = *input.WebhookURL
+	}
+	webhookURL, webhookEvents, err := webhook.ValidateConfig(rawURL, input.WebhookEvents)
+	if err != nil {
+		return nil, "", fmt.Errorf("create instance: %w (%v)", ErrInvalidWebhook, err)
+	}
+	webhookEnabled := false
+	if input.WebhookEnabled != nil {
+		webhookEnabled = *input.WebhookEnabled
+	}
 	if s.users == nil {
 		return nil, "", fmt.Errorf("create instance: users repository is not configured")
 	}
@@ -117,11 +149,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instanc
 	}
 
 	instance := model.Instance{
-		ID:          uuid.New(),
-		Name:        input.Name,
-		ExternalRef: input.ExternalRef,
-		Status:      string(session.StatusDisconnected),
-		OwnerUserID: input.OwnerUserID,
+		ID:             uuid.New(),
+		Name:           input.Name,
+		ExternalRef:    input.ExternalRef,
+		Status:         string(session.StatusDisconnected),
+		OwnerUserID:    input.OwnerUserID,
+		WebhookURL:     webhookURL,
+		WebhookEnabled: webhookEnabled,
+		WebhookEvents:  webhookEvents,
 	}
 
 	created, err := s.repo.Create(ctx, instance)
@@ -200,6 +235,26 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, input UpdateInput) (
 	}
 	if input.ExternalRef != nil {
 		instance.ExternalRef = *input.ExternalRef
+	}
+	// Only the webhook fields present in the patch are validated and applied;
+	// absent ones keep the stored configuration. Validation runs before the
+	// write, so a 422 keeps the previous configuration.
+	if input.WebhookURL != nil {
+		normalized, err := webhook.ValidateURL(*input.WebhookURL)
+		if err != nil {
+			return nil, fmt.Errorf("update instance: %w (%v)", ErrInvalidWebhook, err)
+		}
+		instance.WebhookURL = normalized
+	}
+	if input.WebhookEnabled != nil {
+		instance.WebhookEnabled = *input.WebhookEnabled
+	}
+	if input.WebhookEvents != nil {
+		normalized, err := webhook.ValidateEvents(*input.WebhookEvents)
+		if err != nil {
+			return nil, fmt.Errorf("update instance: %w (%v)", ErrInvalidWebhook, err)
+		}
+		instance.WebhookEvents = normalized
 	}
 
 	updated, err := s.repo.Update(ctx, *instance)
