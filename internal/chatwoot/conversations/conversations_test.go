@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,19 @@ type convFixture struct {
 	toggles  atomic.Int64
 	lastBody map[string]any
 	mu       sync.Mutex
+	events   []string
+}
+
+func (f *convFixture) logEvent(ev string) {
+	f.mu.Lock()
+	f.events = append(f.events, ev)
+	f.mu.Unlock()
+}
+
+func (f *convFixture) dumpEvents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.events...)
 }
 
 func (f *convFixture) handler(t *testing.T) http.HandlerFunc {
@@ -34,6 +48,7 @@ func (f *convFixture) handler(t *testing.T) http.HandlerFunc {
 		path := r.URL.Path
 		switch {
 		case strings.HasSuffix(path, "/conversations") && r.Method == http.MethodGet:
+			f.logEvent("LIST -> " + f.list)
 			_, _ = w.Write([]byte(f.list))
 		case strings.HasSuffix(path, "/conversations") && r.Method == http.MethodPost:
 			raw, _ := io.ReadAll(r.Body)
@@ -42,7 +57,8 @@ func (f *convFixture) handler(t *testing.T) http.HandlerFunc {
 			f.mu.Lock()
 			f.lastBody = body
 			f.mu.Unlock()
-			f.creates.Add(1)
+			n := f.creates.Add(1)
+			f.logEvent("CREATE #" + strconv.FormatInt(n, 10))
 			_, _ = w.Write([]byte(`{"id":100,"status":"open","inbox_id":42}`))
 		case strings.Contains(path, "/conversations/") && strings.HasSuffix(path, "/toggle_status"):
 			f.toggles.Add(1)
@@ -50,9 +66,11 @@ func (f *convFixture) handler(t *testing.T) http.HandlerFunc {
 		case strings.Contains(path, "/conversations/"):
 			id := path[strings.LastIndex(path, "/")+1:]
 			if resp, ok := f.get[id]; ok {
+				f.logEvent("GET " + id + " -> hit")
 				_, _ = w.Write([]byte(resp))
 				return
 			}
+			f.logEvent("GET " + id + " -> 404")
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"message":"not found"}`))
 		default:
@@ -108,7 +126,7 @@ func TestResolveConvergesConcurrentSenders(t *testing.T) {
 		}
 	}
 	if got := f.creates.Load(); got != 1 {
-		t.Errorf("CreateConversation calls = %d, want 1", got)
+		t.Errorf("CreateConversation calls = %d, want 1\nevents:\n%s", got, strings.Join(f.dumpEvents(), "\n"))
 	}
 }
 
@@ -206,7 +224,7 @@ func TestResolveCreatesPendingStatusWithFlag(t *testing.T) {
 		{"flag on sends pending", model.ChatwootConfig{ConversationPending: true}, "pending"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := &convFixture{list: `[]`, get: map[string]string{}}
+			f := &convFixture{list: `[]`, get: map[string]string{"100": `{"id":100,"status":"open","inbox_id":42}`}}
 			srv := httptest.NewServer(f.handler(t))
 			defer srv.Close()
 			if _, err := newConvResolver(srv, tc.config).Resolve(context.Background(), uuid.New(), "5511999999999@s.whatsapp.net", 7); err != nil {
