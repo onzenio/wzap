@@ -71,7 +71,8 @@ type MessageStore interface {
 }
 
 // EnqueueInput is the content accepted by Enqueue. Only the fields of the
-// chosen Type are used; the rest are ignored.
+// chosen Type are used; the rest are ignored. QuotedID carries the WhatsApp
+// message id being replied to (a quote); empty means no quote.
 type EnqueueInput struct {
 	Type        string
 	To          string
@@ -84,6 +85,7 @@ type EnqueueInput struct {
 	DisplayName string
 	VCard       string
 	MediaID     *uuid.UUID
+	QuotedID    string
 }
 
 // Service accepts outbound messages: it validates the target instance, resolves
@@ -176,7 +178,7 @@ func buildPayload(input EnqueueInput) ([]byte, error) {
 		if strings.TrimSpace(input.Text) == "" {
 			return nil, fmt.Errorf("%w: text is required", ErrInvalidInput)
 		}
-		return json.Marshal(textPayload{Text: input.Text})
+		return json.Marshal(textPayload{Text: input.Text, QuotedID: input.QuotedID})
 	case TypeLocation:
 		if math.IsNaN(input.Latitude) || input.Latitude < -90 || input.Latitude > 90 {
 			return nil, fmt.Errorf("%w: latitude out of range", ErrInvalidInput)
@@ -197,15 +199,17 @@ func buildPayload(input EnqueueInput) ([]byte, error) {
 		if input.MediaID == nil {
 			return nil, fmt.Errorf("%w: media_id is required", ErrInvalidInput)
 		}
-		return json.Marshal(mediaPayload{Caption: input.Caption, Filename: input.Filename, PTT: input.PTT})
+		return json.Marshal(mediaPayload{Caption: input.Caption, Filename: input.Filename, PTT: input.PTT, QuotedID: input.QuotedID})
 	default:
 		return nil, fmt.Errorf("%w: unsupported type %q", ErrInvalidInput, input.Type)
 	}
 }
 
-// textPayload is the stored body of a text message.
+// textPayload is the stored body of a text message. QuotedID is the WhatsApp
+// id being replied to, omitted when the message is not a quote.
 type textPayload struct {
-	Text string `json:"text"`
+	Text     string `json:"text"`
+	QuotedID string `json:"quoted_id,omitempty"`
 }
 
 // locationPayload is the stored body of a location message.
@@ -221,11 +225,13 @@ type contactPayload struct {
 }
 
 // mediaPayload is the stored body of a media message. The mimetype is resolved
-// from the media row by the sender.
+// from the media row by the sender. QuotedID is the WhatsApp id being replied
+// to, omitted when the message is not a quote.
 type mediaPayload struct {
 	Caption  string `json:"caption,omitempty"`
 	Filename string `json:"filename,omitempty"`
 	PTT      bool   `json:"ptt,omitempty"`
+	QuotedID string `json:"quoted_id,omitempty"`
 }
 
 // mapMessageError translates a storage error into the service sentinel the HTTP

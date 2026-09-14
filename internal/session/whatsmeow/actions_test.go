@@ -250,6 +250,92 @@ func TestMarkReadFailureIsClassified(t *testing.T) {
 	}
 }
 
+// TestBuildMessageQuotedTextCarriesReplyStanza pins that a quoted text goes
+// as an extended text message (a plain conversation cannot carry a reply)
+// with the quote stanza keyed by the original id, while an unquoted text
+// stays a plain conversation without any stanza.
+func TestBuildMessageQuotedTextCarriesReplyStanza(t *testing.T) {
+	quoted, err := buildMessage(session.OutboundMessage{
+		Type:         "text",
+		RecipientJID: "5511999999999@s.whatsapp.net",
+		Payload:      []byte(`{"text":"resposta","quoted_id":"WA-ORIG-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("buildMessage quoted: %v", err)
+	}
+	ext := quoted.GetExtendedTextMessage()
+	if ext == nil {
+		t.Fatal("quoted text is not an extended text message, want the reply form")
+	}
+	if ext.GetText() != "resposta" {
+		t.Errorf("extended text = %q, want %q", ext.GetText(), "resposta")
+	}
+	ctxInfo := ext.GetContextInfo()
+	if ctxInfo == nil {
+		t.Fatal("quoted text carries no context info, want the reply stanza")
+	}
+	if ctxInfo.GetStanzaID() != "WA-ORIG-1" {
+		t.Errorf("stanza id = %q, want the quoted WA-ORIG-1", ctxInfo.GetStanzaID())
+	}
+	if ctxInfo.GetQuotedMessage() == nil {
+		t.Error("quoted stanza carries no quoted message placeholder")
+	}
+
+	plain, err := buildMessage(session.OutboundMessage{
+		Type:         "text",
+		RecipientJID: "5511999999999@s.whatsapp.net",
+		Payload:      []byte(`{"text":"olá"}`),
+	})
+	if err != nil {
+		t.Fatalf("buildMessage plain: %v", err)
+	}
+	if plain.GetConversation() != "olá" {
+		t.Errorf("plain conversation = %q, want %q", plain.GetConversation(), "olá")
+	}
+	if plain.GetExtendedTextMessage() != nil {
+		t.Error("unquoted text became an extended text message, want a plain conversation")
+	}
+}
+
+// TestNewMediaMessageQuotedImageCarriesReplyStanza pins that a quoted media
+// message carries the quote stanza on the media node, while an unquoted one
+// leaves the context info empty.
+func TestNewMediaMessageQuotedImageCarriesReplyStanza(t *testing.T) {
+	upload := whatsmeow.UploadResponse{
+		URL: "https://whatsapp.example.com/m/1", DirectPath: "/m/1",
+		MediaKey: []byte("key"), FileSHA256: []byte("sha"), FileEncSHA256: []byte("encsha"),
+		FileLength: 3,
+	}
+
+	quoted, err := newMediaMessage(session.OutboundMessage{
+		Type:         "image",
+		RecipientJID: "5511999999999@s.whatsapp.net",
+		Payload:      []byte(`{"caption":"olha","mime_type":"image/jpeg","quoted_id":"WA-ORIG-2"}`),
+	}, upload)
+	if err != nil {
+		t.Fatalf("newMediaMessage quoted: %v", err)
+	}
+	ctxInfo := quoted.GetImageMessage().GetContextInfo()
+	if ctxInfo == nil {
+		t.Fatal("quoted image carries no context info, want the reply stanza")
+	}
+	if ctxInfo.GetStanzaID() != "WA-ORIG-2" {
+		t.Errorf("stanza id = %q, want the quoted WA-ORIG-2", ctxInfo.GetStanzaID())
+	}
+
+	plain, err := newMediaMessage(session.OutboundMessage{
+		Type:         "image",
+		RecipientJID: "5511999999999@s.whatsapp.net",
+		Payload:      []byte(`{"caption":"olha","mime_type":"image/jpeg"}`),
+	}, upload)
+	if err != nil {
+		t.Fatalf("newMediaMessage plain: %v", err)
+	}
+	if plain.GetImageMessage().GetContextInfo() != nil {
+		t.Error("unquoted image carries context info, want none")
+	}
+}
+
 // TestPairPhoneBlankNumber pins the argument guard: nothing is requested
 // without a phone number.
 func TestPairPhoneBlankNumber(t *testing.T) {

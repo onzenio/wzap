@@ -159,6 +159,37 @@ func TestMediaSenderForwardsStoredMedia(t *testing.T) {
 	}
 }
 
+func TestMediaSenderForwardsQuotedID(t *testing.T) {
+	mediaID := uuid.New()
+	msg := model.OutboundMessage{
+		ID:           uuid.New(),
+		Type:         TypeMedia,
+		RecipientJID: "5547988359190@s.whatsapp.net",
+		Payload:      []byte(`{"caption":"olha","quoted_id":"WA-ORIG-9"}`),
+		MediaID:      &mediaID,
+	}
+	resolver := &fakeMediaPaths{pathFn: func(context.Context, uuid.UUID) (string, *model.Media, error) {
+		return "/data/media/" + mediaID.String(), &model.Media{
+			ID:       mediaID,
+			Mimetype: "image/jpeg",
+			Filename: "foto.jpg",
+		}, nil
+	}}
+	sess := sessiontest.NewSession(uuid.New(), nil)
+
+	if _, err := (mediaSender{media: resolver}).Send(context.Background(), sess, msg); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	calls := sess.SendCalls()
+	if len(calls) != 1 {
+		t.Fatalf("session sends = %d, want 1", len(calls))
+	}
+	if got := decodePayloadMap(t, calls[0].Payload); got["quoted_id"] != "WA-ORIG-9" {
+		t.Errorf("session payload quoted_id = %v, want %q", got["quoted_id"], "WA-ORIG-9")
+	}
+}
+
 func TestMediaSenderDefinitiveFailures(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -224,12 +224,14 @@ func New(deps Deps) *Handler {
 }
 
 // Handle processes one webhook payload for instanceID and returns the HTTP
-// status the open route must answer. Discards (private,
-// message_updated without delete, WAID: echo, bot, unknown events) answer
-// 200 with no effect; handled replies answer 200 after enqueueing; a
-// globally disabled connector answers 400; internal failures answer 500.
-// Send failures never fail the webhook: they post a private error note in
-// the conversation and still answer 200.
+// status the open route must answer. Discards (no message, private,
+// message_updated without delete, WAID: echo, bot, unknown events and types)
+// answer 200 with no effect and are evaluated before anything else, so the
+// operational conversation only routes qualifying message_created attendant
+// replies; handled replies answer 200 after enqueueing; a globally disabled
+// connector answers 400; internal failures answer 500. Send failures never
+// fail the webhook: they post a private error note in the conversation and
+// still answer 200.
 func (h *Handler) Handle(ctx context.Context, instanceID uuid.UUID, payload Payload) (int, error) {
 	if !h.global.Enabled {
 		return 400, nil
@@ -248,9 +250,6 @@ func (h *Handler) Handle(ctx context.Context, instanceID uuid.UUID, payload Payl
 		return 200, nil
 	}
 	msg := payload.Message
-	if h.isOperational(payload) {
-		return h.handleOperational(ctx, instanceID, cfg, payload)
-	}
 	if msg.Private {
 		return 200, nil
 	}
@@ -268,6 +267,9 @@ func (h *Handler) Handle(ctx context.Context, instanceID uuid.UUID, payload Payl
 	}
 	if msg.MessageType != MessageTypeOutgoing && msg.MessageType != MessageTypeTemplate {
 		return 200, nil
+	}
+	if h.isOperational(payload) {
+		return h.handleOperational(ctx, instanceID, cfg, payload)
 	}
 	return h.handleOutgoing(ctx, instanceID, cfg, payload)
 }
@@ -319,15 +321,22 @@ func (h *Handler) handleOutgoing(ctx context.Context, instanceID uuid.UUID, cfg 
 		return 200, nil
 	}
 	// Quoted replies resolve best-effort: without correlation the quote is
-	// ignored and the send proceeds.
+	// ignored and the send proceeds unquoted.
+	var quotedID string
 	if msg.InReplyTo != nil {
-		if _, err := h.correlations.GetByChatwootID(ctx, instanceID, *msg.InReplyTo); err != nil && !errors.Is(err, storage.ErrNotFound) {
-			return 500, err
+		corr, err := h.correlations.GetByChatwootID(ctx, instanceID, *msg.InReplyTo)
+		if err != nil {
+			if !errors.Is(err, storage.ErrNotFound) {
+				return 500, err
+			}
+		} else if corr != nil {
+			quotedID = corr.WAKey
 		}
 	}
 	text := h.signedText(cfg, msg)
 	if len(msg.Attachments) > 0 {
-		for _, att := range msg.Attachments {
+		enqueued := 0
+		for i, att := range msg.Attachments {
 			if strings.TrimSpace(att.DataURL) == "" {
 				continue
 			}
@@ -341,7 +350,7 @@ func (h *Handler) handleOutgoing(ctx context.Context, instanceID uuid.UUID, cfg 
 			if filename == "" {
 				filename = "attachment"
 			}
-			stored, err := h.media.Save(ctx, instanceID, mediaDirectionOutbound, fmt.Sprintf("chatwoot-%d", msg.ID), mime, filename, data)
+			stored, err := h.media.Save(ctx, instanceID, mediaDirectionOutbound, fmt.Sprintf("chatwoot-%d-%d", msg.ID, i), mime, filename, data)
 			if err != nil {
 				h.log.Warn("attachment store failed", "instance_id", instanceID, "error", err)
 				h.postPrivateNote(ctx, cfg, conversationIDOf(payload), fmt.Sprintf("Falha ao armazenar anexo: %v", err))
@@ -354,22 +363,43 @@ func (h *Handler) handleOutgoing(ctx context.Context, instanceID uuid.UUID, cfg 
 				Filename: stored.Filename,
 				PTT:      false,
 				MediaID:  &stored.ID,
+				QuotedID: quotedID,
 			}); err != nil {
 				h.log.Warn("media enqueue failed", "instance_id", instanceID, "error", err)
 				h.postPrivateNote(ctx, cfg, conversationIDOf(payload), fmt.Sprintf("Falha ao enviar mídia ao WhatsApp: %v", err))
 				continue
 			}
+			enqueued++
 		}
-		h.markReadBestEffort(ctx, instanceID, conversationIDOf(payload))
+		// When every attachment was skipped or failed but the message carries
+		// text, fall back to a text send so the attendant content is not
+		// silently lost.
+		if enqueued == 0 && strings.TrimSpace(text) != "" {
+			if _, err := h.enqueuer.Enqueue(ctx, instanceID, message.EnqueueInput{
+				Type:     message.TypeText,
+				To:       recipient,
+				Text:     text,
+				QuotedID: quotedID,
+			}); err != nil {
+				h.log.Warn("text fallback enqueue failed", "instance_id", instanceID, "error", err)
+				h.postPrivateNote(ctx, cfg, conversationIDOf(payload), fmt.Sprintf("Falha ao enviar ao WhatsApp: %v", err))
+				return 200, nil
+			}
+			enqueued++
+		}
+		if enqueued > 0 {
+			h.markReadBestEffort(ctx, instanceID, conversationIDOf(payload))
+		}
 		return 200, nil
 	}
 	if strings.TrimSpace(text) == "" {
 		return 200, nil
 	}
 	if _, err := h.enqueuer.Enqueue(ctx, instanceID, message.EnqueueInput{
-		Type: message.TypeText,
-		To:   recipient,
-		Text: text,
+		Type:     message.TypeText,
+		To:       recipient,
+		Text:     text,
+		QuotedID: quotedID,
 	}); err != nil {
 		h.log.Warn("text enqueue failed", "instance_id", instanceID, "error", err)
 		h.postPrivateNote(ctx, cfg, conversationIDOf(payload), fmt.Sprintf("Falha ao enviar ao WhatsApp: %v", err))

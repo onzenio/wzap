@@ -28,6 +28,12 @@ func TestSendersForwardOutboundMessagePerType(t *testing.T) {
 			payload: `{"text":"olá"}`,
 		},
 		{
+			name:    "quoted text",
+			sender:  textSender{},
+			msgType: TypeText,
+			payload: `{"text":"resposta","quoted_id":"WA-ORIG-1"}`,
+		},
+		{
 			name:    "location",
 			sender:  locationSender{},
 			msgType: TypeLocation,

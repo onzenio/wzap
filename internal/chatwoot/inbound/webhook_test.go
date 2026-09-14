@@ -42,13 +42,14 @@ type fakeMediaSaver struct {
 
 type savedMedia struct {
 	direction string
+	messageID string
 	mimetype  string
 	filename  string
 	data      []byte
 }
 
 func (f *fakeMediaSaver) Save(ctx context.Context, instanceID uuid.UUID, direction, messageID, mimetype, filename string, data []byte) (*model.Media, error) {
-	f.saves = append(f.saves, savedMedia{direction: direction, mimetype: mimetype, filename: filename, data: data})
+	f.saves = append(f.saves, savedMedia{direction: direction, messageID: messageID, mimetype: mimetype, filename: filename, data: data})
 	if f.fn != nil {
 		return f.fn(ctx, instanceID, direction, messageID, mimetype, filename, data)
 	}
@@ -396,6 +397,9 @@ func TestHandleQuotedViaCorrelation(t *testing.T) {
 	if len(fx.enqueuer.inputs) != 1 {
 		t.Fatalf("Enqueue calls = %d, want 1 for known quoted", len(fx.enqueuer.inputs))
 	}
+	if got := fx.enqueuer.inputs[0].QuotedID; got != "WA-ORIG-1" {
+		t.Errorf("Enqueue QuotedID = %q, want the correlated WA key WA-ORIG-1", got)
+	}
 	if len(fx.correls.lookups) == 0 {
 		t.Error("correlation lookup missing for quoted")
 	}
@@ -417,6 +421,9 @@ func TestHandleQuotedWithoutCorrelationIgnores(t *testing.T) {
 	}
 	if len(fx.enqueuer.inputs) != 1 {
 		t.Fatalf("Enqueue calls = %d, want 1 (quoted ignored without failing)", len(fx.enqueuer.inputs))
+	}
+	if got := fx.enqueuer.inputs[0].QuotedID; got != "" {
+		t.Errorf("Enqueue QuotedID = %q, want empty for unknown correlation", got)
 	}
 }
 
@@ -640,5 +647,245 @@ func TestHandleGlobalDisabledReturns400(t *testing.T) {
 	}
 	if len(fx.enqueuer.inputs) != 0 {
 		t.Fatalf("Enqueue calls = %d, want 0 when disabled", len(fx.enqueuer.inputs))
+	}
+}
+
+func TestHandleAttachmentsAllEmptyFallsBackToText(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	fx.correls.latest = &model.ChatwootMessage{
+		InstanceID: fx.instance, WAKey: "WA-LAST-1", ChatwootMessageID: 404,
+		ConversationID: 84, ContactSourceID: "5511999999999@s.whatsapp.net",
+	}
+	payload := outgoingPayload(84, "texto importante")
+	payload.Message.Attachments = []Attachment{
+		{ID: 1, FileType: "image", DataURL: "   ", FileName: "empty.jpg"},
+	}
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.down.calls) != 0 {
+		t.Fatalf("Download calls = %d, want 0 for empty data_url", len(fx.down.calls))
+	}
+	if len(fx.enqueuer.inputs) != 1 {
+		t.Fatalf("Enqueue calls = %d, want 1 text fallback", len(fx.enqueuer.inputs))
+	}
+	got := fx.enqueuer.inputs[0]
+	if got.Type != message.TypeText {
+		t.Errorf("Enqueue type = %q, want text fallback", got.Type)
+	}
+	if got.Text != "*Ana:*\ntexto importante" {
+		t.Errorf("Enqueue text = %q, want the signed attendant text", got.Text)
+	}
+	sess, _ := fx.sessions.Get(fx.instance)
+	if len(sess.(*sessiontest.FakeSession).MarkReadCalls()) == 0 {
+		t.Error("MarkRead not called after the text fallback enqueue")
+	}
+}
+
+func TestHandleAttachmentsAllFailedFallsBackToText(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	fx.correls.latestErr = storage.ErrNotFound
+	fx.down.err = errors.New("network down")
+	payload := outgoingPayload(85, "texto importante")
+	payload.Message.Attachments = []Attachment{
+		{ID: 1, FileType: "image", DataURL: "https://chatwoot.example.com/rails/a.jpg", FileName: "a.jpg"},
+	}
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.enqueuer.inputs) != 1 {
+		t.Fatalf("Enqueue calls = %d, want 1 text fallback", len(fx.enqueuer.inputs))
+	}
+	if got := fx.enqueuer.inputs[0]; got.Type != message.TypeText {
+		t.Errorf("Enqueue type = %q, want text fallback", got.Type)
+	}
+	if len(fx.chats.creates) == 0 {
+		t.Error("expected a private note for the failed download")
+	}
+}
+
+func TestHandleAttachmentsTotalFailureWithoutTextSkipsMarkRead(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	fx.correls.latest = &model.ChatwootMessage{
+		InstanceID: fx.instance, WAKey: "WA-LAST-1", ChatwootMessageID: 404,
+		ConversationID: 86, ContactSourceID: "5511999999999@s.whatsapp.net",
+	}
+	fx.down.err = errors.New("network down")
+	payload := outgoingPayload(86, "   ")
+	payload.Message.Attachments = []Attachment{
+		{ID: 1, FileType: "image", DataURL: "https://chatwoot.example.com/rails/a.jpg", FileName: "a.jpg"},
+	}
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.enqueuer.inputs) != 0 {
+		t.Fatalf("Enqueue calls = %d, want 0 on total failure without text", len(fx.enqueuer.inputs))
+	}
+	sess, _ := fx.sessions.Get(fx.instance)
+	if len(sess.(*sessiontest.FakeSession).MarkReadCalls()) != 0 {
+		t.Error("MarkRead called without any enqueue, want no read marker on total failure")
+	}
+}
+
+func TestHandleTwoAttachmentsUseDistinctMediaIDs(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	fx.correls.latestErr = storage.ErrNotFound
+	payload := outgoingPayload(87, "duas fotos")
+	payload.Message.Attachments = []Attachment{
+		{ID: 1, FileType: "image", DataURL: "https://chatwoot.example.com/rails/a.jpg", FileName: "a.jpg"},
+		{ID: 2, FileType: "image", DataURL: "https://chatwoot.example.com/rails/b.jpg", FileName: "b.jpg"},
+	}
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.media.saves) != 2 {
+		t.Fatalf("Save calls = %d, want 2", len(fx.media.saves))
+	}
+	if fx.media.saves[0].messageID == fx.media.saves[1].messageID {
+		t.Errorf("Save messageIDs collide = %q, want one unique id per attachment", fx.media.saves[0].messageID)
+	}
+	if len(fx.enqueuer.inputs) != 2 {
+		t.Fatalf("Enqueue calls = %d, want 2 media", len(fx.enqueuer.inputs))
+	}
+	for i, got := range fx.enqueuer.inputs {
+		if got.Type != message.TypeMedia {
+			t.Errorf("Enqueue[%d] type = %q, want media", i, got.Type)
+		}
+		if got.MediaID == nil {
+			t.Errorf("Enqueue[%d] MediaID is nil, want stored media", i)
+		}
+	}
+}
+
+func TestHandleQuotedMediaCarriesQuotedID(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	fx.correls.latestErr = storage.ErrNotFound
+	quotedID := int64(202)
+	fx.correls.byChatwootID[quotedID] = &model.ChatwootMessage{
+		InstanceID: fx.instance, WAKey: "WA-ORIG-1", ChatwootMessageID: quotedID,
+		ConversationID: 88, ContactSourceID: "5511999999999@s.whatsapp.net",
+	}
+	payload := outgoingPayload(88, "olha")
+	payload.Message.Attachments = []Attachment{
+		{ID: 1, FileType: "image", DataURL: "https://chatwoot.example.com/rails/photo.jpg", FileName: "photo.jpg"},
+	}
+	inReply := quotedID
+	payload.Message.InReplyTo = &inReply
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.enqueuer.inputs) != 1 {
+		t.Fatalf("Enqueue calls = %d, want 1 media", len(fx.enqueuer.inputs))
+	}
+	got := fx.enqueuer.inputs[0]
+	if got.Type != message.TypeMedia {
+		t.Fatalf("Enqueue type = %q, want media", got.Type)
+	}
+	if got.QuotedID != "WA-ORIG-1" {
+		t.Errorf("Enqueue QuotedID = %q, want the correlated WA key WA-ORIG-1", got.QuotedID)
+	}
+}
+
+func TestHandleOperationalPrivateDiscards(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	payload := outgoingPayload(90, "status")
+	payload.Message.Private = true
+	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
+	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.chats.creates) != 0 {
+		t.Fatalf("confirm messages = %d, want 0 for a private note in the operational conversation", len(fx.chats.creates))
+	}
+	if len(fx.enqueuer.inputs) != 0 {
+		t.Fatalf("Enqueue calls = %d, want 0", len(fx.enqueuer.inputs))
+	}
+}
+
+func TestHandleOperationalMessageUpdatedDiscards(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	payload := outgoingPayload(90, "status")
+	payload.Event = EventMessageUpdated
+	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
+	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.chats.creates) != 0 {
+		t.Fatalf("confirm messages = %d, want 0 for message_updated in the operational conversation", len(fx.chats.creates))
+	}
+}
+
+func TestHandleOperationalIncomingDiscards(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	payload := outgoingPayload(90, "status")
+	payload.Message.MessageType = MessageTypeIncoming
+	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
+	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.chats.creates) != 0 {
+		t.Fatalf("confirm messages = %d, want 0 for an incoming message in the operational conversation", len(fx.chats.creates))
+	}
+}
+
+func TestHandleOperationalBotDiscards(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	payload := outgoingPayload(90, "status")
+	payload.Message.Sender.Type = SenderTypeBot
+	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
+	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if len(fx.chats.creates) != 0 {
+		t.Fatalf("confirm messages = %d, want 0 for a bot message in the operational conversation", len(fx.chats.creates))
 	}
 }
