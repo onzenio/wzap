@@ -26,6 +26,10 @@ var allEnvKeys = []string{
 	"WZAP_JWT_SECRET",
 	"WZAP_MAX_INSTANCES",
 	"WZAP_DEFAULT_USER_INSTANCE_QUOTA",
+	"WZAP_CHATWOOT_ENABLED",
+	"WZAP_CHATWOOT_BOT_CONTACT",
+	"WZAP_CHATWOOT_MESSAGE_READ",
+	"WZAP_CHATWOOT_MESSAGE_DELETE",
 }
 
 // clearWZAPEnv clears every WZAP_* variable for the test, overriding and later
@@ -68,6 +72,10 @@ func TestLoadFullConfig(t *testing.T) {
 		"WZAP_LOG_LEVEL":                   "debug",
 		"WZAP_LOG_FORMAT":                  "text",
 		"WZAP_AUTO_MIGRATE":                "false",
+		"WZAP_CHATWOOT_ENABLED":            "true",
+		"WZAP_CHATWOOT_BOT_CONTACT":        "123456",
+		"WZAP_CHATWOOT_MESSAGE_READ":       "true",
+		"WZAP_CHATWOOT_MESSAGE_DELETE":     "true",
 	} {
 		t.Setenv(key, value)
 	}
@@ -98,6 +106,12 @@ func TestLoadFullConfig(t *testing.T) {
 		LogLevel:           "debug",
 		LogFormat:          "text",
 		AutoMigrate:        false,
+		Chatwoot: Chatwoot{
+			Enabled:       true,
+			BotContact:    "123456",
+			MessageRead:   true,
+			MessageDelete: true,
+		},
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -134,6 +148,7 @@ func TestLoadDefaults(t *testing.T) {
 		LogLevel:           "info",
 		LogFormat:          "json",
 		AutoMigrate:        true,
+		Chatwoot:           Chatwoot{},
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -350,6 +365,64 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"WZAP_OUTBOX_WORKERS", "all"},
 		{"WZAP_HUMANIZE", "maybe"},
 		{"WZAP_AUTO_MIGRATE", "perhaps"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			clearWZAPEnv(t)
+			setRequiredEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() error = nil, want error naming %s", tt.key)
+			}
+			if !strings.Contains(err.Error(), tt.key) {
+				t.Errorf("Load() error = %q, want it to mention %s", err, tt.key)
+			}
+		})
+	}
+}
+
+func TestLoadChatwootDefaultsWhenAbsent(t *testing.T) {
+	clearWZAPEnv(t)
+	setRequiredEnv(t)
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Chatwoot != (Chatwoot{}) {
+		t.Errorf("Load().Chatwoot = %+v, want zero value", got.Chatwoot)
+	}
+}
+
+func TestLoadChatwootValid(t *testing.T) {
+	clearWZAPEnv(t)
+	setRequiredEnv(t)
+	t.Setenv("WZAP_CHATWOOT_ENABLED", "true")
+	t.Setenv("WZAP_CHATWOOT_BOT_CONTACT", "123456")
+	t.Setenv("WZAP_CHATWOOT_MESSAGE_READ", "true")
+	t.Setenv("WZAP_CHATWOOT_MESSAGE_DELETE", "1")
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := Chatwoot{Enabled: true, BotContact: "123456", MessageRead: true, MessageDelete: true}
+	if got.Chatwoot != want {
+		t.Errorf("Load().Chatwoot = %+v, want %+v", got.Chatwoot, want)
+	}
+}
+
+func TestLoadChatwootRejectsInvalidBool(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{"WZAP_CHATWOOT_ENABLED", "banana"},
+		{"WZAP_CHATWOOT_MESSAGE_READ", "banana"},
+		{"WZAP_CHATWOOT_MESSAGE_DELETE", "banana"},
 	}
 
 	for _, tt := range tests {

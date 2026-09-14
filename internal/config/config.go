@@ -31,6 +31,16 @@ type Config struct {
 	LogLevel           string
 	LogFormat          string
 	AutoMigrate        bool
+	Chatwoot           Chatwoot
+}
+
+// Chatwoot holds the global Chatwoot connector switches. BotContact is the
+// operational contact identifier; empty means unset.
+type Chatwoot struct {
+	Enabled       bool
+	BotContact    string
+	MessageRead   bool
+	MessageDelete bool
 }
 
 const (
@@ -89,6 +99,10 @@ func Load() (Config, error) {
 	cfg.DefaultUserQuota = nonNegativeIntValue("WZAP_DEFAULT_USER_INSTANCE_QUOTA", 0, &problems)
 	cfg.Humanize = boolValue("WZAP_HUMANIZE", false, &problems)
 	cfg.AutoMigrate = boolValue("WZAP_AUTO_MIGRATE", defaultAutoMigrate, &problems)
+	cfg.Chatwoot.Enabled = boolValue("WZAP_CHATWOOT_ENABLED", false, &problems)
+	cfg.Chatwoot.BotContact = os.Getenv("WZAP_CHATWOOT_BOT_CONTACT")
+	cfg.Chatwoot.MessageRead = boolValue("WZAP_CHATWOOT_MESSAGE_READ", false, &problems)
+	cfg.Chatwoot.MessageDelete = boolValue("WZAP_CHATWOOT_MESSAGE_DELETE", false, &problems)
 
 	if len(problems) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))

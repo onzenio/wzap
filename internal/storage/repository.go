@@ -172,3 +172,20 @@ type APIKeyRepository interface {
 	CountByOwner(ctx context.Context, owner uuid.UUID) (int, error)
 	CountAll(ctx context.Context) (int, error)
 }
+
+// ChatwootConfigRepository persists the per-instance Chatwoot connector
+// configuration. Get reports ErrNotFound when the instance was never
+// configured.
+type ChatwootConfigRepository interface {
+	Get(ctx context.Context, instanceID uuid.UUID) (*model.ChatwootConfig, error)
+	Put(ctx context.Context, cfg model.ChatwootConfig) (*model.ChatwootConfig, error)
+	Delete(ctx context.Context, instanceID uuid.UUID) error
+}
+
+// ChatwootMessageRepository persists WhatsApp to Chatwoot ID correlations.
+// Rows are never purged; DeleteByInstance removes every row of an instance.
+type ChatwootMessageRepository interface {
+	Put(ctx context.Context, msg model.ChatwootMessage) (*model.ChatwootMessage, error)
+	GetByWAKey(ctx context.Context, instanceID uuid.UUID, waKey string) (*model.ChatwootMessage, error)
+	DeleteByInstance(ctx context.Context, instanceID uuid.UUID) (int64, error)
+}
