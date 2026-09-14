@@ -23,6 +23,9 @@ var errLockTimeout = errors.New("conversations: sender lock timeout")
 // locker serializes work per sender key, mirroring instancelock with string
 // keys and a TTL: entries expire so a crashed holder cannot block a sender,
 // and release only clears its own token so an expired handover is safe.
+// The locker only guarantees mutual exclusion; single-execution convergence
+// (one conversation under concurrency) is owned by Resolve with lock +
+// double-check (see TestResolveConvergesConcurrentSenders).
 type locker struct {
 	mu      sync.Mutex
 	held    map[string]time.Time

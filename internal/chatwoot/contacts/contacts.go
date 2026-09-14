@@ -59,6 +59,10 @@ func (r *Resolver) Resolve(ctx context.Context, phone string, isGroup bool, name
 		return nil, fmt.Errorf("contacts: empty phone")
 	}
 	e164 := "+" + digits
+	// Union lookup: client.FindContactByPhone takes a single phone per call,
+	// so each BR variant is searched separately (2 calls max per BR lookup)
+	// and the hits are unioned with dedup by id; longest-wins/merge below
+	// gives the OR semantic.
 	var found []client.Contact
 	seen := map[int64]bool{}
 	for _, variant := range variants(e164) {

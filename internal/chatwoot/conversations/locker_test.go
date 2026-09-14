@@ -8,8 +8,11 @@ import (
 	"time"
 )
 
-// TestLockerSerializesSameKey ensures 20 goroutines on the same key never
-// hold the lock together: mutual exclusion with all runners completing.
+// TestLockerSerializesSameKey pins the locker's real contract: mutual
+// exclusion on one key with every holder completing in turn (all 20 runs
+// execute serially, never overlapping). Single-execution convergence (20
+// goroutines → 1 CreateConversation) is NOT a locker property; it is owned
+// by Resolve with lock + double-check, see TestResolveConvergesConcurrentSenders.
 func TestLockerSerializesSameKey(t *testing.T) {
 	l := newLocker()
 	l.poll = 5 * time.Millisecond

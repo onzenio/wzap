@@ -41,9 +41,13 @@ func TestVariantsKeepsForeignNumbersSingle(t *testing.T) {
 	}
 }
 
-// TestResolveQueriesVariantsWithoutPlus ensures the phone lookup covers every
-// BR variant with an OR semantic (one filter call per variant) and that the
-// filter values never carry the "+" prefix.
+// TestResolveQueriesVariantsWithoutPlus pins the real lookup contract:
+// client-side union — one FindContactByPhone (single-value filter payload
+// without "+") per BR variant, 2 calls max per BR lookup, with hits unioned
+// and deduped by id. Longest-wins/merge on the union is pinned by
+// TestResolveMergesBrazilDuplicates / TestResolveSkipsMergeWhenFlagOff.
+// Union (not a single raw OR payload) because the client takes a single
+// phone per call.
 func TestResolveQueriesVariantsWithoutPlus(t *testing.T) {
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,12 +98,16 @@ func TestResolveQueriesVariantsWithoutPlus(t *testing.T) {
 
 // TestResolveMergesBrazilDuplicates ensures multiple BR hits collapse into
 // the longest-phone contact via contact_merge when merge_brazil_contacts is on.
+// The union behind it (one filter call per variant, deduped by id) is pinned
+// here by asserting both variant calls happened despite a single merged result.
 func TestResolveMergesBrazilDuplicates(t *testing.T) {
 	var gotMerge map[string]any
+	filterCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/accounts/1/contacts/filter":
+			filterCalls++
 			_, _ = w.Write([]byte(`{"payload":[{"id":3,"phone_number":"+551199999999"},{"id":5,"phone_number":"+5511999999999"}]}`))
 		case "/api/v1/accounts/1/actions/contact_merge":
 			raw, _ := io.ReadAll(r.Body)
@@ -122,6 +130,9 @@ func TestResolveMergesBrazilDuplicates(t *testing.T) {
 	}
 	if gotMerge["base_contact_id"] != float64(5) || gotMerge["mergee_contact_id"] != float64(3) {
 		t.Errorf("merge request = %v, want base 5 mergee 3", gotMerge)
+	}
+	if filterCalls != 2 {
+		t.Errorf("filter calls = %d, want 2 (one per BR variant, unioned)", filterCalls)
 	}
 }
 
