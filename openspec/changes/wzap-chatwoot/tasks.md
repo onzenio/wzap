@@ -28,7 +28,7 @@
 ## 5. Webhook Chatwoot→WA
 
 - [x] 5.1 Implementar `POST /chatwoot/webhook/{id}` aberto com filtros (private, `message_updated`, eco `WAID:`, bot), verificando `200` com corpo de bot nos descartes
-- [ ] 5.2 Implementar texto com assinatura e anexos (`data_url` → `media.Storage` → `Enqueue`), quoted via correlação e nota privada em falha, verificando mensagens enfileiradas e `sent`
+- [x] 5.2 Implementar texto com assinatura e anexos (`data_url` → `media.Storage` → `Enqueue`), quoted via correlação e nota privada em falha, verificando mensagens enfileiradas e `sent`
 - [ ] 5.3 Implementar delete reverso, template e mark-read, verificando efeitos via sessão fake
 - [ ] 5.4 Implementar `set`/`find`/`import` sob o contrato produto (raiz + `apikey:`) com validação `422`, verificando matriz de auth e envelopes
 
