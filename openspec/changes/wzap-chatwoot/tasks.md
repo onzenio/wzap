@@ -7,7 +7,7 @@
 ## 2. Extensão de sessão/whatsmeow
 
 - [x] 2.1 Tratar `ProtocolMessage` (REVOKE/EDIT) no dispatch com `OnMessageEdit/OnMessageDelete` no sink, verificando testes com eventos sintetizados e fakes atualizados
-- [ ] 2.2 Implementar `DeleteMessage` e `MarkRead` na sessão + whatsmeow, verificando testes contra fake e chamada à lib
+- [x] 2.2 Implementar `DeleteMessage` e `MarkRead` na sessão + whatsmeow, verificando testes contra fake e chamada à lib
 - [ ] 2.3 Implementar pareamento por código (para `init:<number>`), verificando fluxo com código simulado
 - [ ] 2.4 Implementar feed de history-sync (notificações de progresso + lotes + contatos) por instância, verificando níveis reais da lib pinada no build e acumuladores isolados por instância
 
