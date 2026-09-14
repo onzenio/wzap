@@ -28,6 +28,7 @@ type ChatwootConfigStore interface {
 // ChatwootInbound processes the open webhook payload.
 type ChatwootInbound interface {
 	Handle(ctx context.Context, instanceID uuid.UUID, payload inbound.Payload) (int, error)
+	HandleCommand(ctx context.Context, instanceID uuid.UUID, command string, conversationID int64) (int, error)
 }
 
 // ChatwootInboxClient provisions the api inbox for auto_create.
@@ -245,13 +246,19 @@ func handleChatwootGet(instances InstanceService, configs ChatwootConfigStore, g
 
 // handleChatwootWebhook processes POST /chatwoot/webhook/{id} outside auth:
 // open by design, the secret is v2. The global gate answers 400 when
-// disabled; discards answer 200 with a bot body.
-func handleChatwootWebhook(instances InstanceService, inb ChatwootInbound, global cfgpkg.Chatwoot) http.HandlerFunc {
+// disabled; discards answer 200 with a bot body. O limiter responde 429
+// no estouro por instância; comandos operacionais nunca executam aqui
+// (descartam 200 no inbound) — usam POST /instances/{id}/chatwoot/command.
+func handleChatwootWebhook(instances InstanceService, inb ChatwootInbound, global cfgpkg.Chatwoot, limiter *ChatwootRateLimiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id, err := uuid.Parse(rawID)
 		if err != nil {
 			Error(w, r, http.StatusNotFound, "not_found", "instance not found")
+			return
+		}
+		if limiter != nil && !limiter.Allow(id) {
+			Error(w, r, http.StatusTooManyRequests, "rate_limited", "rate limited")
 			return
 		}
 		if _, err := instances.Get(r.Context(), id); err != nil {
@@ -388,6 +395,69 @@ func handleChatwootImport(instances InstanceService, configs ChatwootConfigStore
 			return
 		}
 		JSON(w, http.StatusAccepted, map[string]any{"imported": imported})
+	}
+}
+
+// chatwootCommandRequest is the POST /instances/{id}/chatwoot/command payload.
+type chatwootCommandRequest struct {
+	Command        string `json:"command"`
+	ConversationID int64  `json:"conversation_id"`
+}
+
+// handleChatwootCommand runs operational commands behind the dual auth
+// (status, init[:number], clearcache, disconnect). O webhook aberto nunca
+// executa comandos; esta rota autenticada é o único caminho.
+func handleChatwootCommand(instances InstanceService, configs ChatwootConfigStore, global cfgpkg.Chatwoot, inb ChatwootInbound) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !global.Enabled {
+			Error(w, r, http.StatusBadRequest, "chatwoot_disabled", "chatwoot connector is disabled")
+			return
+		}
+		id, ok := instanceID(w, r)
+		if !ok {
+			return
+		}
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+		if _, err := configs.Get(r.Context(), id); err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				Error(w, r, http.StatusNotFound, "not_found", "chatwoot not configured")
+				return
+			}
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		var request chatwootCommandRequest
+		if err := decodeJSONBody(w, r, &request); err != nil {
+			writeJSONBodyError(w, r, err)
+			return
+		}
+		if strings.TrimSpace(request.Command) == "" {
+			Error(w, r, http.StatusBadRequest, "invalid_request", "invalid request body")
+			return
+		}
+		if inb == nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		status, err := inb.HandleCommand(r.Context(), id, request.Command, request.ConversationID)
+		if err != nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		if status != http.StatusOK {
+			code, message := chatwootWebhookError(status)
+			Error(w, r, status, code, message)
+			return
+		}
+		JSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 

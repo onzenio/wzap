@@ -529,11 +529,7 @@ func TestHandleMessageReadMarksLastReceived(t *testing.T) {
 
 func TestHandleOperationalStatus(t *testing.T) {
 	fx := newFixture(t, enabledConnector(), globalOn())
-	payload := outgoingPayload(90, "status")
-	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
-	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
-
-	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	status, err := fx.handler.HandleCommand(context.Background(), fx.instance, "status", 90)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -550,11 +546,7 @@ func TestHandleOperationalStatus(t *testing.T) {
 
 func TestHandleOperationalInitWithNumber(t *testing.T) {
 	fx := newFixture(t, enabledConnector(), globalOn())
-	payload := outgoingPayload(90, "init:5511999999999")
-	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
-	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
-
-	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	status, err := fx.handler.HandleCommand(context.Background(), fx.instance, "init:5511999999999", 90)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -575,11 +567,7 @@ func TestHandleOperationalInitWithNumber(t *testing.T) {
 
 func TestHandleOperationalClearCache(t *testing.T) {
 	fx := newFixture(t, enabledConnector(), globalOn())
-	payload := outgoingPayload(90, "clearcache")
-	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
-	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
-
-	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	status, err := fx.handler.HandleCommand(context.Background(), fx.instance, "clearcache", 90)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -596,11 +584,7 @@ func TestHandleOperationalClearCache(t *testing.T) {
 
 func TestHandleOperationalDisconnect(t *testing.T) {
 	fx := newFixture(t, enabledConnector(), globalOn())
-	payload := outgoingPayload(90, "disconnect")
-	payload.Conversation.ContactInbox.SourceID = OperationalContactIdentifier
-	payload.Conversation.Meta.Sender.Identifier = OperationalContactIdentifier
-
-	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	status, err := fx.handler.HandleCommand(context.Background(), fx.instance, "disconnect", 90)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

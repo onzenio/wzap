@@ -194,6 +194,10 @@ func (f *fakeChatwootInbound) Handle(_ context.Context, _ uuid.UUID, _ inbound.P
 	return f.status, f.err
 }
 
+func (f *fakeChatwootInbound) HandleCommand(_ context.Context, _ uuid.UUID, _ string, _ int64) (int, error) {
+	return f.status, f.err
+}
+
 // TestChatwootTokenMasked pins that PUT/GET .../chatwoot never echo the
 // token: it is accepted on write only, responses carry an empty token.
 func TestChatwootTokenMasked(t *testing.T) {

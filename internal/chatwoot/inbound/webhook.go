@@ -228,10 +228,11 @@ func New(deps Deps) *Handler {
 
 // Handle processes one webhook payload for instanceID and returns the HTTP
 // status the open route must answer. Discards (no message, private,
-// message_updated without delete, WAID: echo, bot, unknown events and types)
-// answer 200 with no effect and are evaluated before anything else, so the
-// operational conversation only routes qualifying message_created attendant
-// replies; handled replies answer 200 after enqueueing; a globally disabled
+// message_updated without delete, WAID: echo, bot, unknown events and types,
+// e a conversa operacional) answer 200 with no effect and are evaluated
+// before anything else, so comandos operacionais nunca executam no webhook
+// aberto (vão para POST /instances/{id}/chatwoot/command autenticado);
+// handled replies answer 200 after enqueueing; a globally disabled
 // connector answers 400; internal failures answer 500. Send failures never
 // fail the webhook: they post a private error note in the conversation and
 // still answer 200.
@@ -271,10 +272,38 @@ func (h *Handler) Handle(ctx context.Context, instanceID uuid.UUID, payload Payl
 	if msg.MessageType != MessageTypeOutgoing && msg.MessageType != MessageTypeTemplate {
 		return 200, nil
 	}
+	// Comandos operacionais não executam no webhook aberto: descartam 200
+	// sem efeitos (PairPhone/Connect/Disconnect/ClearCache só via rota
+	// autenticada HandleCommand).
 	if h.isOperational(payload) {
-		return h.handleOperational(ctx, instanceID, cfg, payload)
+		return 200, nil
 	}
 	return h.handleOutgoing(ctx, instanceID, cfg, payload)
+}
+
+// HandleCommand executes an operational command behind auth (POST
+// /instances/{id}/chatwoot/command). It loads the connector, discards when
+// disabled, and runs status/init/clearcache/disconnect with in-conversation
+// confirmation.
+func (h *Handler) HandleCommand(ctx context.Context, instanceID uuid.UUID, command string, conversationID int64) (int, error) {
+	if !h.global.Enabled {
+		return 400, nil
+	}
+	cfg, err := h.configs.Get(ctx, instanceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return 200, nil
+		}
+		return 500, err
+	}
+	if cfg == nil || !cfg.Enabled {
+		return 200, nil
+	}
+	return h.handleOperational(ctx, instanceID, cfg, Payload{
+		Event:        EventMessageCreated,
+		Message:      &Message{Content: command, MessageType: MessageTypeOutgoing, ConversationID: conversationID},
+		Conversation: &Conversation{ID: conversationID},
+	})
 }
 
 // handleMessageUpdated processes reverse deletes. Any other update (edit
