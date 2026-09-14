@@ -104,7 +104,7 @@ func mediaUploadServer(t *testing.T, svc MessageService, store MediaStore, repo 
 	if repo == nil {
 		repo = newFakeIdempotency()
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken, MaxMediaBytes: testMaxMediaBytes},
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken, MaxMediaBytes: testMaxMediaBytes},
 		discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),

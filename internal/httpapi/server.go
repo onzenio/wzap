@@ -55,7 +55,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /api/v1/instances/{id}/messages", handleListMessages(deps.Messages))
 	api.HandleFunc("GET /api/v1/instances/{id}/messages/{message_id}", handleGetMessage(deps.Messages))
 	api.HandleFunc("GET /api/v1/media/{id}", handleGetMedia(deps.Media))
-	mux.Handle("/api/v1/", Auth(cfg.ServiceToken)(envelopeFallback(api)))
+	mux.Handle("/api/v1/", Auth(cfg.APIKey)(envelopeFallback(api)))
 
 	return &http.Server{
 		Addr:              cfg.HTTPAddr,

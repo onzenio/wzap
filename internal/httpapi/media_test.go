@@ -76,7 +76,7 @@ func mediaServer(t *testing.T, store MediaStore) *http.Server {
 	if store == nil {
 		store = &fakeMediaStore{}
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Media:        store,

@@ -126,7 +126,7 @@ func instancesServer(t *testing.T, svc InstanceService) *http.Server {
 	if svc == nil {
 		svc = &fakeInstanceService{}
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    svc,

@@ -43,7 +43,7 @@ func numbersServer(t *testing.T, instances InstanceService, numbers NumberResolv
 	if numbers == nil {
 		numbers = &fakeNumberResolver{}
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    instances,
