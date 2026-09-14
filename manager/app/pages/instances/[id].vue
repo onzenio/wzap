@@ -2,8 +2,10 @@
 import { ApiError } from '~/composables/useApi'
 import DeleteInstanceModal from '~/components/instances/DeleteInstanceModal.vue'
 import InstanceStatusBadge from '~/components/instances/InstanceStatusBadge.vue'
+import MessagesCard from '~/components/instances/MessagesCard.vue'
 import OneTimeKeyDisplay from '~/components/instances/OneTimeKeyDisplay.vue'
 import PairingCard from '~/components/instances/PairingCard.vue'
+import TestSendCard from '~/components/instances/TestSendCard.vue'
 import WebhookCard from '~/components/instances/WebhookCard.vue'
 import type { Instance, RotatedInstanceKey } from '~/types/api'
 
@@ -36,6 +38,7 @@ const generating = ref(false)
 const keyFailure = ref<string | null>(null)
 const revokeOpen = ref(false)
 const revoking = ref(false)
+const messagesRefresh = ref(0)
 
 useSeoMeta({
   title: 'Instance details'
@@ -128,6 +131,12 @@ async function onPaired() {
 // detail keeps showing the persisted configuration.
 function onWebhookUpdated(updated: Instance) {
   instance.value = updated
+}
+
+// A test send emits on accept and again when the message settles; either
+// refresh bumps the message history so the new row shows up.
+function onMessagesRefresh() {
+  messagesRefresh.value += 1
 }
 
 async function onGenerate() {
@@ -377,6 +386,18 @@ await load()
         <WebhookCard
           :instance="instance"
           @updated="onWebhookUpdated"
+        />
+
+        <TestSendCard
+          :instance-id="instance.id"
+          :status="instance.status"
+          @sent="onMessagesRefresh"
+          @settled="onMessagesRefresh"
+        />
+
+        <MessagesCard
+          :instance-id="instance.id"
+          :refresh-key="messagesRefresh"
         />
 
         <UCard>

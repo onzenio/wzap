@@ -145,3 +145,65 @@ export interface AccountUser {
   role: AccountRole
   instance_quota: number
 }
+
+// Delivery state reported by the API for an outbound message: queued is the
+// initial state answered with 202, sending means a worker claimed it, sent
+// and failed are terminal. Mirrors the message package statuses.
+export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed'
+
+// Outbound message as answered by GET /instances/{id}/messages/{message_id}
+// and by the list below. Mirrors messageResponse in
+// internal/httpapi/messages.go: recipient carries the resolved WhatsApp JID,
+// whatsapp_message_id is empty until the message reaches sent.
+export interface OutboundMessage {
+  id: string
+  instance_id: string
+  type: string
+  recipient: string
+  status: MessageStatus
+  whatsapp_message_id: string
+  last_error: string
+  attempts: number
+  delivered_at: string | null
+  read_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+// One page of GET /instances/{id}/messages with the opaque cursor of the next
+// page, empty on the last page.
+export interface MessageListPage {
+  items: OutboundMessage[]
+  next_cursor: string
+}
+
+// 202 answer of the four send endpoints. The message starts queued and moves
+// to sent or failed; the detail screen polls the message until it settles.
+export interface AcceptedMessage {
+  message_id: string
+  status: string
+}
+
+// POST /instances/{id}/numbers/check answer: exists is false with an empty
+// jid when the number is malformed or absent from WhatsApp. The check never
+// enqueues anything.
+export interface NumberCheckResult {
+  exists: boolean
+  jid: string
+  normalized: string
+}
+
+// Media kind declared on a multipart upload. It must match the uploaded
+// content type or the server answers 422; the console derives it from the
+// file MIME with the same mapping as media.Kind.
+export type MediaKind = 'image' | 'video' | 'audio' | 'document'
+
+// Payload for POST /instances/{id}/messages/media (multipart/form-data).
+export interface SendMediaInput {
+  to: string
+  type: MediaKind
+  caption?: string
+  filename?: string
+  ptt?: boolean
+  file: File
+}
