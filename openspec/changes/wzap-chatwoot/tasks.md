@@ -1,7 +1,7 @@
 ## 1. Persistência e configuração
 
 - [x] 1.1 Criar migration com `chatwoot_configs` (17 campos) e `chatwoot_messages` (correlação, sem purga, FK com delete em cascata), verificando aplicação em banco limpo via `postgres.Migrate` em teste
-- [ ] 1.2 Implementar repositórios (config por instância, correlação wa_key↔IDs, delete por instância), verificando testes de integração contra Postgres com `postgrestest`
+- [x] 1.2 Implementar repositórios (config por instância, correlação wa_key↔IDs, delete por instância), verificando testes de integração contra Postgres com `postgrestest`
 - [ ] 1.3 Adicionar envs `WZAP_CHATWOOT_*` (enabled, import URI, operational contact, message read/delete) ao parser, verificando testes (válido, ausente, inválido)
 
 ## 2. Extensão de sessão/whatsmeow
