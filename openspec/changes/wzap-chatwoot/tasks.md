@@ -15,7 +15,7 @@
 
 - [x] 3.1 Implementar cliente HTTP mínimo do Chatwoot (contacts, inboxes, conversations, messages, merge, filter/search, `update_last_seen`) sobre `httptest` fake, verificando paths, headers e corpos contra o fake
 - [x] 3.2 Implementar resolução de conversa com cache + `instancelock` por remetente (reuso open/pending/reopen), verificando convergência sob concorrência em teste
-- [ ] 3.3 Implementar contatos com regra BR (variantes 9º dígito, merge, grupos, foto/nome) e labels best-effort via `pgx` (pula sem URI + `warn`), verificando contra fakes
+- [x] 3.3 Implementar contatos com regra BR (variantes 9º dígito, merge, grupos, foto/nome) e labels best-effort via `pgx` (pula sem URI + `warn`), verificando contra fakes
 - [ ] 3.4 Adicionar deps pinadas (`phonenumbers`, `x/image`), verificando `go build ./...` limpo
 
 ## 4. Espelho WA→Chatwoot
