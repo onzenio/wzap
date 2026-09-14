@@ -61,6 +61,12 @@ func seedAdmin(ctx context.Context, cfg config.Config, users storage.UserReposit
 
 	claimed, err := instances.BackfillOwner(ctx, admin.ID)
 	if err != nil {
+		// BackfillOwner is a single UPDATE, hence atomic: on failure zero rows
+		// were claimed and the just-created admin owns nothing. Remove him so
+		// the next boot sees zero users and retries the full seed path.
+		if delErr := users.Delete(ctx, admin.ID); delErr != nil {
+			return fmt.Errorf("seed admin: backfill instance owners: %v; compensating admin delete also failed: %w", err, delErr)
+		}
 		return fmt.Errorf("seed admin: backfill instance owners: %w", err)
 	}
 

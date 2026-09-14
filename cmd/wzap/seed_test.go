@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -264,5 +265,49 @@ func TestSeedAdminHalfConfigured(t *testing.T) {
 				t.Errorf("Get(legacy) OwnerUserID = %v, want nil (untouched)", got.OwnerUserID)
 			}
 		})
+	}
+}
+
+// errBackfiller is an ownerBackfiller that always fails, simulating a broken
+// backfill UPDATE.
+type errBackfiller struct{ err error }
+
+func (f errBackfiller) BackfillOwner(context.Context, uuid.UUID) (int64, error) {
+	return 0, f.err
+}
+
+func TestSeedAdminBackfillFailureRollsBackAdmin(t *testing.T) {
+	ctx := context.Background()
+	_, users, instances := newSeedRepos(t)
+
+	cfg := seedTestConfig("admin@example.com", "s3cret-password")
+	boom := errors.New("backfill boom")
+	err := seedAdmin(ctx, cfg, users, errBackfiller{err: boom}, seedTestLogger())
+	if err == nil {
+		t.Fatal("seedAdmin(backfill failure) = nil, want the backfill error")
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("seedAdmin(backfill failure) = %v, want it to wrap the backfill error", err)
+	}
+
+	// The just-created admin owns nothing (the UPDATE is atomic), so he is
+	// removed: the next boot sees zero users and retries the full seed path.
+	count, err := users.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("users count = %d, want 0 (failed backfill rolls the admin back)", count)
+	}
+
+	if err := seedAdmin(ctx, cfg, users, instances, seedTestLogger()); err != nil {
+		t.Fatalf("seedAdmin(retry with working backfiller): %v", err)
+	}
+	admin, err := users.GetByEmail(ctx, "admin@example.com")
+	if err != nil {
+		t.Fatalf("GetByEmail(admin) after retry: %v", err)
+	}
+	if admin.Role != "admin" {
+		t.Errorf("admin Role after retry = %q, want admin", admin.Role)
 	}
 }
