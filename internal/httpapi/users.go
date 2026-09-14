@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"wzap/internal/auth"
+	"wzap/internal/model"
 	"wzap/internal/storage"
 )
 
@@ -18,6 +22,235 @@ type userQuotaResponse struct {
 	Email         string `json:"email"`
 	Role          string `json:"role"`
 	InstanceQuota int    `json:"instance_quota"`
+}
+
+// newUserQuotaResponse maps a stored user to its JSON representation. The
+// password hash never leaves the storage boundary.
+func newUserQuotaResponse(user *model.User) userQuotaResponse {
+	return userQuotaResponse{
+		ID:            user.ID.String(),
+		Email:         user.Email,
+		Role:          user.Role,
+		InstanceQuota: user.InstanceQuota,
+	}
+}
+
+// optionalQuota captures the presence of the instance_quota field
+// independently of its JSON type: a *json.RawMessage cannot tell an absent
+// field from an explicit null (both decode to nil), while this value type
+// records every occurrence — including null — via UnmarshalJSON, so an
+// explicit null can be rejected with 422 instead of taking the default.
+type optionalQuota struct {
+	Present bool
+	Raw     json.RawMessage
+}
+
+// UnmarshalJSON marks the field present and keeps its raw bytes for the
+// handler to validate as an integer quota.
+func (o *optionalQuota) UnmarshalJSON(data []byte) error {
+	o.Present = true
+	o.Raw = append(o.Raw[:0], data...)
+	return nil
+}
+
+// createUserRequest is the POST /users payload. The quota uses optionalQuota
+// so an absent field (creation-time default) stays distinct from an explicit
+// value, and a non-integer value can be rejected with 422 instead of the
+// generic 400 of a body decoding failure.
+type createUserRequest struct {
+	Email         string        `json:"email"`
+	Password      string        `json:"password"`
+	Role          string        `json:"role"`
+	InstanceQuota optionalQuota `json:"instance_quota"`
+}
+
+// handleCreateUser registers a manager user and answers 201 with the user.
+// Only the global scope and admin sessions may create; any other scope
+// answers 403 before the body is read. There is no public registration: an
+// unauthenticated request never reaches this handler (the middleware answers
+// 401). An empty email or password, a role outside admin|user, or a missing,
+// non-integer or negative quota answers 422; a malformed body answers 400. A
+// missing quota applies defaultQuota (WZAP_DEFAULT_USER_INSTANCE_QUOTA); an
+// explicit value, including 0 (unlimited), is used verbatim. A duplicate
+// email answers 409.
+func handleCreateUser(users storage.UserRepository, defaultQuota int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := requireAdminScope(r); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+
+		var request createUserRequest
+		if err := decodeJSONBody(w, r, &request); err != nil {
+			writeJSONBodyError(w, r, err)
+			return
+		}
+		email := strings.TrimSpace(request.Email)
+		if email == "" {
+			Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "invalid email")
+			return
+		}
+		if request.Password == "" {
+			Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "invalid password")
+			return
+		}
+		if request.Role != "admin" && request.Role != "user" {
+			Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "invalid role")
+			return
+		}
+		quota := defaultQuota
+		if request.InstanceQuota.Present {
+			var parsed *int
+			if err := json.Unmarshal(request.InstanceQuota.Raw, &parsed); err != nil || parsed == nil || *parsed < 0 {
+				Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "invalid instance_quota")
+				return
+			}
+			quota = *parsed
+		}
+
+		if users == nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		hash, err := auth.HashPassword(request.Password)
+		if err != nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		created, err := users.Create(r.Context(), model.User{
+			ID:            uuid.New(),
+			Email:         email,
+			PasswordHash:  hash,
+			Role:          request.Role,
+			InstanceQuota: quota,
+		})
+		if err != nil {
+			if errors.Is(err, storage.ErrEmailTaken) {
+				Error(w, r, http.StatusConflict, "conflict", "email already taken")
+				return
+			}
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		JSON(w, http.StatusCreated, newUserQuotaResponse(created))
+	}
+}
+
+// handleListUsers answers every user in created_at order. Only the global
+// scope and admin sessions may list; any other scope answers 403.
+func handleListUsers(users storage.UserRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := requireAdminScope(r); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+
+		if users == nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		stored, err := users.List(r.Context())
+		if err != nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		response := make([]userQuotaResponse, 0, len(stored))
+		for i := range stored {
+			response = append(response, newUserQuotaResponse(&stored[i]))
+		}
+		JSON(w, http.StatusOK, response)
+	}
+}
+
+// handleGetUser answers one user by id. Only the global scope and admin
+// sessions may read; any other scope answers 403 before the target is read,
+// so non-admin callers cannot probe user ids. A malformed id and an unknown
+// user answer 404.
+func handleGetUser(users storage.UserRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := requireAdminScope(r); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+
+		id, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			Error(w, r, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+
+		if users == nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		stored, err := users.GetByID(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				Error(w, r, http.StatusNotFound, "not_found", "user not found")
+				return
+			}
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		JSON(w, http.StatusOK, newUserQuotaResponse(stored))
+	}
+}
+
+// handleDeleteUser removes a user and answers 204. Only the global scope
+// and admin sessions may delete; any other scope answers 403 before the
+// target is read. A malformed id and an unknown user answer 404. An owner
+// that still owns instances answers 409 and nothing is removed, via two
+// layers: a deterministic CountByOwner pre-check before the delete, and a
+// foreign-key race cover mapping a 23503 violation from Delete to 409 as
+// well. There is no transfer and no cascade, by omission.
+func handleDeleteUser(users storage.UserRepository, keys storage.APIKeyRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := requireAdminScope(r); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+
+		id, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			Error(w, r, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+
+		if users == nil || keys == nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		owned, err := keys.CountByOwner(r.Context(), id)
+		if err != nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		if owned > 0 {
+			Error(w, r, http.StatusConflict, "conflict", "user still owns instances")
+			return
+		}
+
+		if err := users.Delete(r.Context(), id); err != nil {
+			switch {
+			case errors.Is(err, storage.ErrNotFound):
+				Error(w, r, http.StatusNotFound, "not_found", "user not found")
+			case isForeignKeyViolation(err):
+				Error(w, r, http.StatusConflict, "conflict", "user still owns instances")
+			default:
+				Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			}
+			return
+		}
+		JSON(w, http.StatusNoContent, nil)
+	}
+}
+
+// isForeignKeyViolation reports whether err wraps a Postgres foreign-key
+// violation (SQLSTATE 23503), covering the check-then-delete race where an
+// instance row lands after the CountByOwner pre-check.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 // patchQuotaRequest is the PATCH /users/{id} payload. The quota arrives as a

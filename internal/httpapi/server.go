@@ -71,6 +71,10 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /instances/{id}/messages", handleListMessages(deps.Instances, deps.Messages))
 	api.HandleFunc("GET /instances/{id}/messages/{message_id}", handleGetMessage(deps.Instances, deps.Messages))
 	api.HandleFunc("GET /media/{id}", handleGetMedia(deps.Instances, deps.Media))
+	api.HandleFunc("POST /users", handleCreateUser(deps.Users, cfg.DefaultUserQuota))
+	api.HandleFunc("GET /users", handleListUsers(deps.Users))
+	api.HandleFunc("GET /users/{id}", handleGetUser(deps.Users))
+	api.HandleFunc("DELETE /users/{id}", handleDeleteUser(deps.Users, deps.Keys))
 	api.HandleFunc("PATCH /users/{id}", handleUpdateUserQuota(deps.Users))
 	// "/" is the least-specific outer pattern, so Authenticate runs before
 	// the api mux sees the request: an unknown path without credential

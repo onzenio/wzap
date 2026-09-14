@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,9 @@ func (f *fakeUserRepository) Create(_ context.Context, user model.User) (*model.
 	if f.err != nil {
 		return nil, f.err
 	}
+	if existing, ok := f.byEmail[strings.ToLower(user.Email)]; ok && existing.ID != user.ID {
+		return nil, fmt.Errorf("create user: %w", storage.ErrEmailTaken)
+	}
 	f.byID[user.ID] = &user
 	f.byEmail[strings.ToLower(user.Email)] = &user
 	return &user, nil
@@ -64,12 +68,37 @@ func (f *fakeUserRepository) GetByEmail(_ context.Context, email string) (*model
 	return nil, storage.ErrNotFound
 }
 
-func (f *fakeUserRepository) List(context.Context) ([]model.User, error) {
-	return nil, nil
+func (f *fakeUserRepository) List(_ context.Context) ([]model.User, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	users := make([]model.User, 0, len(f.byID))
+	for _, u := range f.byID {
+		users = append(users, *u)
+	}
+	sort.Slice(users, func(i, j int) bool {
+		if users[i].CreatedAt.Equal(users[j].CreatedAt) {
+			return users[i].ID.String() < users[j].ID.String()
+		}
+		return users[i].CreatedAt.Before(users[j].CreatedAt)
+	})
+	return users, nil
 }
 
 func (f *fakeUserRepository) Delete(_ context.Context, id uuid.UUID) error {
+	if f.err != nil {
+		return f.err
+	}
+	u, ok := f.byID[id]
+	if !ok {
+		return fmt.Errorf("delete user: %w", storage.ErrNotFound)
+	}
 	delete(f.byID, id)
+	for email, existing := range f.byEmail {
+		if existing.ID == u.ID {
+			delete(f.byEmail, email)
+		}
+	}
 	return nil
 }
 
