@@ -35,7 +35,7 @@
 ## 6. Import histórico
 
 - [x] 6.1 Implementar pool `pgx` do Postgres do Chatwoot com guard por URI, verificando inércia total sem URI
-- [ ] 6.2 Implementar import de contatos e mensagens (ordem, dedup `WAID:`, lotes, CTE de FKs, `days_limit`, placeholders), verificando idempotência em reexecução contra Postgres fake/real de teste
+- [x] 6.2 Implementar import de contatos e mensagens (ordem, dedup `WAID:`, lotes, CTE de FKs, `days_limit`, placeholders), verificando idempotência em reexecução contra Postgres fake/real de teste
 - [ ] 6.3 Implementar gatilhos (auto pós-pareamento, manual, cron 30min `syncLostMessages`) com avisos no bot, verificando cada gatilho em teste
 
 ## 7. Fiação e verificação final
