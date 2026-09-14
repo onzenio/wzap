@@ -219,6 +219,8 @@ func instanceRouteCases(target uuid.UUID, mediaID uuid.UUID) []struct {
 		{name: "disconnect", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/disconnect"},
 		{name: "numbers check", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/numbers/check", body: `{"phone":"5547988359190"}`},
 		{name: "send text", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/messages/text", body: `{"to":"5547988359190","text":"ola"}`},
+		{name: "send location", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/messages/location", body: `{"to":"5547988359190","latitude":-23.55,"longitude":-46.63}`},
+		{name: "send contact", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/messages/contact", body: `{"to":"5547988359190","display_name":"Fulano","vcard":"BEGIN:VCARD"}`},
 		{name: "get message", method: http.MethodGet, path: "/api/v1/instances/" + target.String() + "/messages/" + msgID},
 		{name: "list messages", method: http.MethodGet, path: "/api/v1/instances/" + target.String() + "/messages"},
 		{name: "download media of instance", method: http.MethodGet, path: "/api/v1/media/" + mediaID.String()},
@@ -338,6 +340,29 @@ func TestRBACRandomUUIDIsNotFound(t *testing.T) {
 					}
 				})
 			}
+
+			t.Run("upload media to unknown instance", func(t *testing.T) {
+				body, formType := multipartBody(t,
+					[][2]string{{"to", "5547988359190"}, {"type", "image"}},
+					"foto.jpg", "image/jpeg", []byte("bytes"))
+				req := httptest.NewRequest(http.MethodPost,
+					"/api/v1/instances/"+unknown.String()+"/messages/media", bytes.NewReader(body))
+				req.Header.Set("Content-Type", formType)
+				if cred.cookie != nil {
+					req.AddCookie(cred.cookie)
+				}
+				if cred.apiKey != "" {
+					req.Header.Set("apikey", cred.apiKey)
+				}
+				rec := httptest.NewRecorder()
+				srv.Handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusNotFound, rec.Body.String())
+				}
+				if code := errorCode(t, rec.Body.Bytes()); code != "not_found" {
+					t.Errorf("error code = %q, want %q", code, "not_found")
+				}
+			})
 		})
 	}
 }
