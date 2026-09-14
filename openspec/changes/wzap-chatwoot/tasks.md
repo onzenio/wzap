@@ -20,7 +20,7 @@
 
 ## 4. Espelho WA→Chatwoot
 
-- [ ] 4.1 Implementar consumer JetStream durável in-process com dedup (`event_id`, `source_id`), verificando reentrega idempotente contra NATS de teste
+- [x] 4.1 Implementar consumer JetStream durável in-process com dedup (`event_id`, `source_id`), verificando reentrega idempotente contra NATS de teste
 - [ ] 4.2 Implementar mapeamento de conteúdo (texto, 6 mídias via `media.Storage`, contato, localização, listas, reaction, PIX, ads com thumbnail, markdown, grupos, replies via correlação), verificando cada tipo contra Chatwoot fake
 - [ ] 4.3 Implementar edit/delete/read-sync e avisos da conversa operacional em pt-BR (conexão, QR com imagem+pairing-code, throttle 30s), verificando cenários contra fakes
 - [ ] 4.4 Publicar novos subjects de edit/delete via outbox, verificando envelope versionado e consumo pelo worker
