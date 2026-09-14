@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -184,8 +185,9 @@ var errQuotaExceeded = errors.New("quota exceeded")
 // unfiltered: every existing instance counts, any state. A non-positive
 // MaxInstances disables the global check and a stored per-user quota of 0
 // means unlimited for that check; the creation-time default quota is never
-// consulted here. A nil keys or users dependency skips its check so handlers
-// wired without quota deps stay permissive.
+// consulted here. The checks are fail-closed: a nil keys or users dependency
+// is a wiring error that answers 500 instead of silently disabling
+// enforcement (production always wires both).
 func checkCreateQuotas(r *http.Request, scope auth.Scope, owner uuid.UUID, users storage.UserRepository, keys storage.APIKeyRepository, maxInstances int) error {
 	if err := auth.RequireRole(scope, "admin"); err == nil {
 		return nil
@@ -194,7 +196,10 @@ func checkCreateQuotas(r *http.Request, scope auth.Scope, owner uuid.UUID, users
 		return nil
 	}
 
-	if keys != nil && maxInstances > 0 {
+	if keys == nil {
+		return fmt.Errorf("check create quotas: keys repository is not configured")
+	}
+	if maxInstances > 0 {
 		total, err := keys.CountAll(r.Context())
 		if err != nil {
 			return err
@@ -204,8 +209,8 @@ func checkCreateQuotas(r *http.Request, scope auth.Scope, owner uuid.UUID, users
 		}
 	}
 
-	if users == nil || keys == nil {
-		return nil
+	if users == nil {
+		return fmt.Errorf("check create quotas: users repository is not configured")
 	}
 	ownerUser, err := users.GetByID(r.Context(), owner)
 	if err != nil {

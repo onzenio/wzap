@@ -238,3 +238,55 @@ func TestQuotaIgnoresDefaultQuotaAtCheckTime(t *testing.T) {
 }
 
 var _ storage.APIKeyRepository = (*countingKeys)(nil)
+
+func TestQuotaNilDepsFailClosed(t *testing.T) {
+	userID := uuid.New()
+	cookie := rbacSessionCookie(mustSessionToken(t, userID, "user"))
+
+	t.Run("nil keys answers 500", func(t *testing.T) {
+		users := newFakeUserRepository(quotaUser(userID, "cliente@example.com", "user", 1))
+		srv, svc := quotaTestServer(t, 0, users, nil)
+
+		rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, cookie, "", nil)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+		}
+		if code := errorCode(t, rec.Body.Bytes()); code != "internal_error" {
+			t.Errorf("error code = %q, want %q", code, "internal_error")
+		}
+		if len(svc.createInputs) != 0 {
+			t.Errorf("Create calls = %d, want none when missing quota deps fail closed", len(svc.createInputs))
+		}
+	})
+
+	t.Run("nil users answers 500", func(t *testing.T) {
+		keys := &countingKeys{}
+		srv, svc := quotaTestServer(t, 0, nil, keys)
+
+		rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, cookie, "", nil)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+		}
+		if code := errorCode(t, rec.Body.Bytes()); code != "internal_error" {
+			t.Errorf("error code = %q, want %q", code, "internal_error")
+		}
+		if len(svc.createInputs) != 0 {
+			t.Errorf("Create calls = %d, want none when missing quota deps fail closed", len(svc.createInputs))
+		}
+	})
+
+	t.Run("admin bypass precedes the nil checks", func(t *testing.T) {
+		adminID := uuid.New()
+		srv, _ := quotaTestServer(t, 0, nil, nil)
+
+		adminCookie := rbacSessionCookie(mustSessionToken(t, adminID, "admin"))
+		if rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, adminCookie, "", nil); rec.Code != http.StatusCreated {
+			t.Errorf("admin with nil deps status = %d, want %d (body %q)", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		if rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, nil, testToken, nil); rec.Code != http.StatusCreated {
+			t.Errorf("global with nil deps status = %d, want %d (body %q)", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	})
+}

@@ -25,6 +25,8 @@ func createOwnerTestServer(t *testing.T, svc InstanceService) *http.Server {
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    svc,
+			Users:        newFakeUserRepository(),
+			Keys:         &fakeAPIKeyRepository{},
 			JWTSecret:    testJWTSecret,
 		},
 	)

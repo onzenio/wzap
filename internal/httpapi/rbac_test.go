@@ -161,6 +161,7 @@ func (f *rbacFixture) rbacServer(t *testing.T) *http.Server {
 			Media:        f.rbacMedia(),
 			Numbers:      &fakeNumberResolver{resolveFn: func(context.Context, uuid.UUID, string) (string, error) { return "5547988359190@s.whatsapp.net", nil }},
 			Idempotency:  newFakeIdempotency(),
+			Users:        newFakeUserRepository(),
 			Keys:         f.keys,
 			JWTSecret:    testJWTSecret,
 		},
@@ -572,6 +573,7 @@ func TestRBACCreateGating(t *testing.T) {
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    svc,
 			Keys:         f.keys,
+			Users:        newFakeUserRepository(),
 			JWTSecret:    testJWTSecret,
 		},
 	)
