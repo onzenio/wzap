@@ -45,6 +45,7 @@ func (s *instanceSession) Connect(ctx context.Context) (string, time.Time, error
 		cancel()
 		return "", time.Time{}, fmt.Errorf("open qr channel: %w", err)
 	}
+	s.log.Info("pairing connect started", "instance_id", s.instanceID)
 
 	first := make(chan qrResult, 1)
 	s.mu.Lock()
@@ -63,12 +64,16 @@ func (s *instanceSession) Connect(ctx context.Context) (string, time.Time, error
 	select {
 	case res := <-first:
 		if res.err != nil {
+			s.log.Warn("pairing first qr failed", "instance_id", s.instanceID, "error", res.err)
 			return "", time.Time{}, res.err
 		}
+		s.log.Info("pairing first qr received", "instance_id", s.instanceID, "expires_at", res.expiresAt)
 		return res.code, res.expiresAt, nil
 	case <-time.After(pairingFirstQRTimeout):
+		s.log.Warn("pairing timed out waiting for first qr", "instance_id", s.instanceID, "timeout", pairingFirstQRTimeout)
 		return "", time.Time{}, fmt.Errorf("%w: timed out waiting for the first qr code", session.ErrTransient)
 	case <-ctx.Done():
+		s.log.Warn("pairing connect cancelled", "instance_id", s.instanceID, "error", ctx.Err())
 		return "", time.Time{}, ctx.Err()
 	}
 }
@@ -98,14 +103,17 @@ func (s *instanceSession) monitorQR(qrChan <-chan whatsmeow.QRChannelItem) {
 			expiresAt := time.Now().Add(item.Timeout)
 			s.storeQR(item.Code, expiresAt)
 			s.deliverFirstQR(qrResult{code: item.Code, expiresAt: expiresAt})
+			s.log.Debug("qr code rotated", "instance_id", s.instanceID, "expires_at", expiresAt)
 		case whatsmeow.QRChannelSuccess.Event:
 			s.storeQR("", time.Time{})
 			s.deliverFirstQR(qrResult{err: errors.New("pairing finished before a qr code was delivered")})
+			s.log.Info("pairing succeeded", "instance_id", s.instanceID)
 			s.setStatus(session.StatusConnected, s.client.Store.GetJID().String(), "")
 			return
 		case whatsmeow.QRChannelTimeout.Event:
 			s.storeQR("", time.Time{})
 			s.deliverFirstQR(qrResult{err: errors.New("qr pairing timed out")})
+			s.log.Warn("pairing timed out", "instance_id", s.instanceID, "reason", "qr code expired")
 			s.setStatus(session.StatusDisconnected, "", "qr code expired")
 			return
 		case whatsmeow.QRChannelEventError:
@@ -115,6 +123,7 @@ func (s *instanceSession) monitorQR(qrChan <-chan whatsmeow.QRChannelItem) {
 				err = errors.New("qr pairing failed")
 			}
 			s.deliverFirstQR(qrResult{err: err})
+			s.log.Warn("pairing failed", "instance_id", s.instanceID, "error", err)
 			s.setStatus(session.StatusError, "", err.Error())
 			return
 		default:
@@ -122,6 +131,7 @@ func (s *instanceSession) monitorQR(qrChan <-chan whatsmeow.QRChannelItem) {
 			s.log.Debug("ignoring qr channel event", "instance_id", s.instanceID, "event", item.Event)
 		}
 	}
+	s.log.Warn("pairing qr channel closed", "instance_id", s.instanceID, "reason", "qr channel closed")
 	s.setStatus(session.StatusDisconnected, "", "qr channel closed")
 }
 
