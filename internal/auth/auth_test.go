@@ -135,6 +135,18 @@ func TestParseTokenRejects(t *testing.T) {
 		t.Fatalf("MintToken: %v", err)
 	}
 
+	// Tampering the last base64url char is flaky: the HS256 signature
+	// (32 bytes = 43 chars) carries 2 padding bits in the final char, so
+	// some replacements decode to identical bytes and stay valid. Flip a
+	// middle char instead, which always changes the decoded bytes.
+	mid := len(token) / 2
+	tampered := token
+	if tampered[mid] == 'A' {
+		tampered = tampered[:mid] + "B" + tampered[mid+1:]
+	} else {
+		tampered = tampered[:mid] + "A" + tampered[mid+1:]
+	}
+
 	for _, tt := range []struct {
 		name  string
 		token string
@@ -143,7 +155,7 @@ func TestParseTokenRejects(t *testing.T) {
 	}{
 		{name: "wrong secret", token: token, secret: "wrong-secret"},
 		{name: "malformed", token: "not-a-token", secret: "right-secret"},
-		{name: "tampered", token: token[:len(token)-1] + "x", secret: "right-secret"},
+		{name: "tampered", token: tampered, secret: "right-secret"},
 		{name: "empty", token: "", secret: "right-secret"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
