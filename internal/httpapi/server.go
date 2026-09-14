@@ -29,6 +29,7 @@ type Deps struct {
 	Idempotency  storage.IdempotencyRepository
 	Media        MediaStore
 	Users        storage.UserRepository
+	Keys         storage.APIKeyRepository
 	JWTSecret    string
 }
 
@@ -57,11 +58,11 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /api/v1/instances/{id}/messages", handleListMessages(deps.Messages))
 	api.HandleFunc("GET /api/v1/instances/{id}/messages/{message_id}", handleGetMessage(deps.Messages))
 	api.HandleFunc("GET /api/v1/media/{id}", handleGetMedia(deps.Media))
-	mux.Handle("/api/v1/", Auth(cfg.APIKey)(envelopeFallback(api)))
+	mux.Handle("/api/v1/", Authenticate(cfg.APIKey, deps.Users, deps.Keys, deps.JWTSecret)(envelopeFallback(api)))
 
 	// The session endpoints authenticate with the cookie, never with the
-	// service token, so they mount on the outer mux outside the Auth guard
-	// while keeping the current /api/v1 prefix.
+	// apikey header, so they mount on the outer mux outside the Authenticate
+	// guard while keeping the current /api/v1 prefix.
 	secure := secureCookies(cfg.PublicURL)
 	authMux := http.NewServeMux()
 	authMux.HandleFunc("POST /api/v1/auth/login", handleLogin(deps.Users, deps.JWTSecret, secure))

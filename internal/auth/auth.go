@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,6 +55,38 @@ func ContextWithScope(ctx context.Context, scope Scope) context.Context {
 func ScopeFromContext(ctx context.Context) (Scope, bool) {
 	scope, ok := ctx.Value(scopeKey{}).(Scope)
 	return scope, ok
+}
+
+// ErrForbidden reports that the scope in context lacks the required role or
+// instance. Callers map it to 403.
+var ErrForbidden = errors.New("forbidden")
+
+// RequireRole reports whether scope may act with role: the global scope acts
+// as admin everywhere, a user scope acts with exactly its own role, and an
+// instance scope never satisfies a role.
+func RequireRole(s Scope, role string) error {
+	if s.Kind == ScopeGlobal {
+		return nil
+	}
+	if s.Kind == ScopeUser && s.Role == role {
+		return nil
+	}
+	return ErrForbidden
+}
+
+// RequireInstance reports whether scope may act on the instance id: the
+// global scope reaches every instance, an instance scope reaches exactly its
+// own instance, and a user scope is always denied here — user-to-own-instance
+// authorization needs the instance owner from the database, which is handler
+// logic, not this helper.
+func RequireInstance(s Scope, id uuid.UUID) error {
+	if s.Kind == ScopeGlobal {
+		return nil
+	}
+	if s.Kind == ScopeInstance && s.InstanceID == id {
+		return nil
+	}
+	return ErrForbidden
 }
 
 // HashPassword hashes password with bcrypt at the default cost.

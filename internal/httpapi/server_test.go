@@ -24,7 +24,7 @@ func serve(t *testing.T, srv *http.Server, method, path, token string) *httptest
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("apikey", token)
 	}
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)

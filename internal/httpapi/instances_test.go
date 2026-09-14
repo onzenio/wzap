@@ -142,7 +142,7 @@ func serveJSON(t *testing.T, srv *http.Server, method, path, body string) *httpt
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 	return rec

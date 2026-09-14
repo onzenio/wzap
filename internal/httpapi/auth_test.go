@@ -98,8 +98,8 @@ func seedAuthUser(t *testing.T, email, password, role string) *model.User {
 	return &model.User{ID: uuid.New(), Email: email, PasswordHash: hash, Role: role}
 }
 
-// serveAuth sends a request without the service token: the session endpoints
-// authenticate with the cookie, never with the Bearer token.
+// serveAuth sends a request without the machine credential: the session endpoints
+// authenticate with the cookie, never with the apikey header.
 func serveAuth(t *testing.T, srv *http.Server, method, path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	var req *http.Request

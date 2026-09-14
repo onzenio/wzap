@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,8 +12,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
+	"wzap/internal/auth"
+	"wzap/internal/storage"
 )
 
 const testToken = "test-service-token"
@@ -44,58 +52,259 @@ func errorCode(t *testing.T, body []byte) string {
 	return payload.Error.Code
 }
 
-func TestAuth(t *testing.T) {
-	tests := []struct {
-		name       string
-		header     string
-		wantStatus int
-	}{
-		{name: "missing header", header: "", wantStatus: http.StatusUnauthorized},
-		{name: "missing credentials", header: "Bearer ", wantStatus: http.StatusUnauthorized},
-		{name: "wrong scheme", header: "Basic dGVzdA==", wantStatus: http.StatusUnauthorized},
-		{name: "wrong token", header: "Bearer other-token", wantStatus: http.StatusUnauthorized},
-		{name: "extended token", header: "Bearer " + testToken + "-extra", wantStatus: http.StatusUnauthorized},
-		{name: "valid token", header: "Bearer " + testToken, wantStatus: http.StatusOK},
-		{name: "scheme is case insensitive", header: "bearer " + testToken, wantStatus: http.StatusOK},
+func TestAuthenticate(t *testing.T) {
+	const globalKey = testToken
+	const jwtSecret = testJWTSecret
+
+	adminID := uuid.New()
+	userID := uuid.New()
+	instanceID := uuid.New()
+
+	const instanceKey = "instance-key-in-clear"
+	sum := sha256.Sum256([]byte(instanceKey))
+	instanceHash := hex.EncodeToString(sum[:])
+	keys := &fakeAPIKeyRepository{byHash: map[string]uuid.UUID{instanceHash: instanceID}}
+
+	adminToken, err := auth.MintToken(adminID, "admin", jwtSecret)
+	if err != nil {
+		t.Fatalf("MintToken admin: %v", err)
+	}
+	userToken, err := auth.MintToken(userID, "user", jwtSecret)
+	if err != nil {
+		t.Fatalf("MintToken user: %v", err)
+	}
+	expiredAdmin, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": adminID.String(), "role": "admin",
+		"exp": time.Now().Add(-time.Hour).Unix(),
+	}).SignedString([]byte(jwtSecret))
+	if err != nil {
+		t.Fatalf("sign expired token: %v", err)
+	}
+	wrongSecretToken, err := auth.MintToken(adminID, "admin", "another-secret")
+	if err != nil {
+		t.Fatalf("MintToken wrong secret: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
-			if tt.header != "" {
-				req.Header.Set("Authorization", tt.header)
-			}
-			rec := httptest.NewRecorder()
-
-			Auth(testToken)(okHandler()).ServeHTTP(rec, req)
-
-			if rec.Code != tt.wantStatus {
-				t.Fatalf("status = %d, want %d (body %q)", rec.Code, tt.wantStatus, rec.Body.String())
-			}
-			if tt.wantStatus != http.StatusUnauthorized {
-				return
-			}
-			if code := errorCode(t, rec.Body.Bytes()); code != "unauthorized" {
-				t.Errorf("error code = %q, want %q", code, "unauthorized")
-			}
-			if strings.Contains(rec.Body.String(), testToken) {
-				t.Errorf("response leaks the service token: %q", rec.Body.String())
-			}
+	serve := func(req *http.Request) (*httptest.ResponseRecorder, *auth.Scope) {
+		t.Helper()
+		var captured auth.Scope
+		var found bool
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			captured, found = auth.ScopeFromContext(r.Context())
+			w.WriteHeader(http.StatusOK)
 		})
+		rec := httptest.NewRecorder()
+		Authenticate(globalKey, nil, keys, jwtSecret)(inner).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return rec, nil
+		}
+		if !found {
+			t.Fatalf("inner handler runs without a scope in context")
+		}
+		return rec, &captured
 	}
+
+	newRequest := func(cookieValue, apiKey string, bearer string) *http.Request {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
+		if cookieValue != "" {
+			req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookieValue})
+		}
+		if apiKey != "" {
+			req.Header.Set("apikey", apiKey)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", bearer)
+		}
+		return req
+	}
+
+	t.Run("admin session cookie yields user scope", func(t *testing.T) {
+		_, scope := serve(newRequest(adminToken, "", ""))
+		if scope == nil {
+			t.Fatal("no scope captured")
+		}
+		if scope.Kind != auth.ScopeUser || scope.UserID != adminID || scope.Role != "admin" {
+			t.Errorf("scope = %+v, want user admin %s", scope, adminID)
+		}
+	})
+
+	t.Run("user session cookie yields user scope", func(t *testing.T) {
+		_, scope := serve(newRequest(userToken, "", ""))
+		if scope == nil {
+			t.Fatal("no scope captured")
+		}
+		if scope.Kind != auth.ScopeUser || scope.UserID != userID || scope.Role != "user" {
+			t.Errorf("scope = %+v, want user %s", scope, userID)
+		}
+	})
+
+	t.Run("global apikey yields global scope", func(t *testing.T) {
+		_, scope := serve(newRequest("", globalKey, ""))
+		if scope == nil {
+			t.Fatal("no scope captured")
+		}
+		if scope.Kind != auth.ScopeGlobal {
+			t.Errorf("scope kind = %q, want %q", scope.Kind, auth.ScopeGlobal)
+		}
+	})
+
+	t.Run("instance key yields instance scope", func(t *testing.T) {
+		_, scope := serve(newRequest("", instanceKey, ""))
+		if scope == nil {
+			t.Fatal("no scope captured")
+		}
+		if scope.Kind != auth.ScopeInstance || scope.InstanceID != instanceID {
+			t.Errorf("scope = %+v, want instance %s", scope, instanceID)
+		}
+	})
+
+	t.Run("session wins over global key", func(t *testing.T) {
+		_, scope := serve(newRequest(userToken, globalKey, ""))
+		if scope == nil {
+			t.Fatal("no scope captured")
+		}
+		if scope.Kind != auth.ScopeUser || scope.UserID != userID {
+			t.Errorf("scope = %+v, want session user %s to win", scope, userID)
+		}
+	})
+
+	t.Run("bad cookie falls through to global key", func(t *testing.T) {
+		for name, bad := range map[string]string{
+			"malformed":    "not-a-token",
+			"expired":      expiredAdmin,
+			"wrong secret": wrongSecretToken,
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, scope := serve(newRequest(bad, globalKey, ""))
+				if scope == nil {
+					t.Fatal("no scope captured")
+				}
+				if scope.Kind != auth.ScopeGlobal {
+					t.Errorf("scope kind = %q, want %q", scope.Kind, auth.ScopeGlobal)
+				}
+			})
+		}
+	})
+
+	t.Run("bad cookie falls through to instance key", func(t *testing.T) {
+		_, scope := serve(newRequest("not-a-token", instanceKey, ""))
+		if scope == nil {
+			t.Fatal("no scope captured")
+		}
+		if scope.Kind != auth.ScopeInstance || scope.InstanceID != instanceID {
+			t.Errorf("scope = %+v, want instance %s", scope, instanceID)
+		}
+	})
+
+	t.Run("failures share identical 401s", func(t *testing.T) {
+		unknown := newRequest("", "unknown-key", "")
+		none := newRequest("", "", "")
+		bearerOnly := newRequest("", "", "Bearer "+globalKey)
+
+		var bodies = map[string]string{}
+		for name, req := range map[string]*http.Request{
+			"unknown key":   unknown,
+			"no credential": none,
+			"Bearer only":   bearerOnly,
+		} {
+			t.Run(name, func(t *testing.T) {
+				var reached bool
+				inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusOK)
+				})
+				rec := httptest.NewRecorder()
+				Authenticate(globalKey, nil, keys, jwtSecret)(inner).ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusUnauthorized, rec.Body.String())
+				}
+				if reached {
+					t.Error("inner handler ran on an unauthenticated request")
+				}
+				if code := errorCode(t, rec.Body.Bytes()); code != "unauthorized" {
+					t.Errorf("error code = %q, want %q", code, "unauthorized")
+				}
+				for _, leak := range []string{globalKey, instanceKey, jwtSecret} {
+					if leak != "" && strings.Contains(rec.Body.String(), leak) {
+						t.Errorf("response leaks a credential: %q", rec.Body.String())
+					}
+				}
+				bodies[name] = rec.Body.String()
+			})
+		}
+
+		// The middleware must not distinguish missing, unknown and legacy
+		// Bearer: all three 401 bodies are byte-for-byte identical.
+		if bodies["no credential"] != bodies["unknown key"] {
+			t.Errorf("no-credential body differs from unknown-key body:\nno-credential: %s\nunknown-key:   %s",
+				bodies["no credential"], bodies["unknown key"])
+		}
+		if bodies["Bearer only"] != bodies["unknown key"] {
+			t.Errorf("Bearer-only body differs from unknown-key body:\nBearer-only: %s\nunknown-key: %s",
+				bodies["Bearer only"], bodies["unknown key"])
+		}
+	})
 }
 
-func TestAuthRejectsEmptyConfiguredToken(t *testing.T) {
+func TestAuthenticateRejectsEmptyGlobalKey(t *testing.T) {
+	keys := &fakeAPIKeyRepository{byHash: map[string]uuid.UUID{}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
-	req.Header.Set("Authorization", "Bearer ")
+	req.Header.Set("apikey", "some-key")
 	rec := httptest.NewRecorder()
 
-	Auth("")(okHandler()).ServeHTTP(rec, req)
+	Authenticate("", nil, keys, testJWTSecret)(okHandler()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
+
+// fakeAPIKeyRepository is an in-memory storage.APIKeyRepository keyed by hash.
+type fakeAPIKeyRepository struct {
+	byHash map[string]uuid.UUID
+	err    error
+}
+
+func (f *fakeAPIKeyRepository) SetHash(_ context.Context, instanceID uuid.UUID, hash string) error {
+	if f.err != nil {
+		return f.err
+	}
+	if f.byHash == nil {
+		f.byHash = map[string]uuid.UUID{}
+	}
+	f.byHash[hash] = instanceID
+	return nil
+}
+
+func (f *fakeAPIKeyRepository) InstanceByHash(_ context.Context, hash string) (uuid.UUID, error) {
+	if f.err != nil {
+		return uuid.Nil, f.err
+	}
+	if id, ok := f.byHash[hash]; ok {
+		return id, nil
+	}
+	return uuid.Nil, storage.ErrNotFound
+}
+
+func (f *fakeAPIKeyRepository) ClearHash(_ context.Context, instanceID uuid.UUID) error {
+	if f.err != nil {
+		return f.err
+	}
+	for hash, id := range f.byHash {
+		if id == instanceID {
+			delete(f.byHash, hash)
+		}
+	}
+	return nil
+}
+
+func (f *fakeAPIKeyRepository) CountByOwner(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeAPIKeyRepository) CountAll(_ context.Context) (int, error) { return 0, nil }
 
 func TestRequestIDEchoesProvidedID(t *testing.T) {
 	var seen string

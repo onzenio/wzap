@@ -187,3 +187,70 @@ func TestScopeFromContextAbsent(t *testing.T) {
 		t.Error("ScopeFromContext on a bare context = true, want false")
 	}
 }
+
+func TestRequireRole(t *testing.T) {
+	adminID := uuid.New()
+	instanceID := uuid.New()
+
+	tests := []struct {
+		name    string
+		scope   auth.Scope
+		role    string
+		wantErr bool
+	}{
+		{name: "global satisfies admin", scope: auth.Scope{Kind: auth.ScopeGlobal}, role: "admin"},
+		{name: "global satisfies user", scope: auth.Scope{Kind: auth.ScopeGlobal}, role: "user"},
+		{name: "global satisfies unknown role", scope: auth.Scope{Kind: auth.ScopeGlobal}, role: "other"},
+		{name: "admin satisfies admin", scope: auth.Scope{Kind: auth.ScopeUser, UserID: adminID, Role: "admin"}, role: "admin"},
+		{name: "user satisfies user", scope: auth.Scope{Kind: auth.ScopeUser, UserID: adminID, Role: "user"}, role: "user"},
+		{name: "user denied admin", scope: auth.Scope{Kind: auth.ScopeUser, UserID: adminID, Role: "user"}, role: "admin", wantErr: true},
+		{name: "admin denied user", scope: auth.Scope{Kind: auth.ScopeUser, UserID: adminID, Role: "admin"}, role: "user", wantErr: true},
+		{name: "instance never satisfies admin", scope: auth.Scope{Kind: auth.ScopeInstance, InstanceID: instanceID}, role: "admin", wantErr: true},
+		{name: "instance never satisfies empty role", scope: auth.Scope{Kind: auth.ScopeInstance, InstanceID: instanceID}, role: "", wantErr: true},
+		{name: "empty scope denied", scope: auth.Scope{}, role: "admin", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := auth.RequireRole(tt.scope, tt.role)
+			if tt.wantErr && err == nil {
+				t.Error("RequireRole = nil, want an error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("RequireRole = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestRequireInstance(t *testing.T) {
+	id := uuid.New()
+	other := uuid.New()
+	userID := uuid.New()
+
+	tests := []struct {
+		name    string
+		scope   auth.Scope
+		id      uuid.UUID
+		wantErr bool
+	}{
+		{name: "global satisfies any instance", scope: auth.Scope{Kind: auth.ScopeGlobal}, id: id},
+		{name: "instance satisfies own id", scope: auth.Scope{Kind: auth.ScopeInstance, InstanceID: id}, id: id},
+		{name: "instance denied other id", scope: auth.Scope{Kind: auth.ScopeInstance, InstanceID: id}, id: other, wantErr: true},
+		{name: "user always denied", scope: auth.Scope{Kind: auth.ScopeUser, UserID: userID, Role: "admin"}, id: id, wantErr: true},
+		{name: "user denied even when ids match", scope: auth.Scope{Kind: auth.ScopeUser, UserID: id, Role: "admin"}, id: id, wantErr: true},
+		{name: "empty scope denied", scope: auth.Scope{}, id: id, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := auth.RequireInstance(tt.scope, tt.id)
+			if tt.wantErr && err == nil {
+				t.Error("RequireInstance = nil, want an error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("RequireInstance = %v, want nil", err)
+			}
+		})
+	}
+}

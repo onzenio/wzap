@@ -124,7 +124,7 @@ func serveMediaUpload(
 
 	body, formType := multipartBody(t, fields, filename, contentType, content)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/media", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	req.Header.Set("Content-Type", formType)
 	for name, value := range headers {
 		req.Header.Set(name, value)
@@ -143,7 +143,7 @@ func serveMessages(t *testing.T, srv *http.Server, method, path, body string, he
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
@@ -767,7 +767,7 @@ func TestSendMediaRejectsMalformedMultipart(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/media",
 		strings.NewReader("não é multipart"))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
