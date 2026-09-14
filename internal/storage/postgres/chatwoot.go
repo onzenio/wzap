@@ -64,6 +64,11 @@ func (r *ChatwootConfigRepository) Get(ctx context.Context, instanceID uuid.UUID
 // Put upserts the Chatwoot config of an instance and returns the stored row
 // with database timestamps.
 func (r *ChatwootConfigRepository) Put(ctx context.Context, cfg model.ChatwootConfig) (*model.ChatwootConfig, error) {
+	// pgx encodes a nil slice as NULL, which would violate the
+	// ignore_jids NOT NULL constraint; an absent list means "ignore none".
+	if cfg.IgnoreJIDs == nil {
+		cfg.IgnoreJIDs = []string{}
+	}
 	stored, err := scanChatwootConfig(r.pool.QueryRow(ctx, `
 		INSERT INTO chatwoot_configs (instance_id, enabled, url, account_id, token,
 			name_inbox, sign_msg, sign_delimiter, reopen_conversation, conversation_pending,

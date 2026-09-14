@@ -129,6 +129,55 @@ func TestChatwootConfigPutAndGet(t *testing.T) {
 	}
 }
 
+func TestChatwootConfigPutNilAndEmptyIgnoreJIDs(t *testing.T) {
+	ctx := context.Background()
+	pool := postgrestest.NewPool(t)
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate test schema: %v", err)
+	}
+
+	instances := NewInstanceRepository(pool)
+	cfgRepo, _ := NewChatwootRepositories(pool)
+
+	for _, tc := range []struct {
+		name       string
+		ignoreJIDs []string
+	}{
+		{name: "nil", ignoreJIDs: nil},
+		{name: "empty", ignoreJIDs: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance, err := instances.Create(ctx, model.Instance{
+				ID:     uuid.New(),
+				Name:   "chatwoot-ignore-" + tc.name,
+				Status: "disconnected",
+			})
+			if err != nil {
+				t.Fatalf("create instance: %v", err)
+			}
+
+			stored, err := cfgRepo.Put(ctx, model.ChatwootConfig{
+				InstanceID: instance.ID,
+				IgnoreJIDs: tc.ignoreJIDs,
+			})
+			if err != nil {
+				t.Fatalf("Put(IgnoreJIDs=%v): %v", tc.ignoreJIDs, err)
+			}
+			if len(stored.IgnoreJIDs) != 0 {
+				t.Errorf("Put IgnoreJIDs = %v, want empty", stored.IgnoreJIDs)
+			}
+
+			got, err := cfgRepo.Get(ctx, instance.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if len(got.IgnoreJIDs) != 0 {
+				t.Errorf("Get IgnoreJIDs = %v, want empty", got.IgnoreJIDs)
+			}
+		})
+	}
+}
+
 func TestChatwootMessagePutGetDeleteByInstance(t *testing.T) {
 	ctx := context.Background()
 	pool := postgrestest.NewPool(t)
