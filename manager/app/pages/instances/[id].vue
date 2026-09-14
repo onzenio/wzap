@@ -3,6 +3,7 @@ import { ApiError } from '~/composables/useApi'
 import DeleteInstanceModal from '~/components/instances/DeleteInstanceModal.vue'
 import InstanceStatusBadge from '~/components/instances/InstanceStatusBadge.vue'
 import OneTimeKeyDisplay from '~/components/instances/OneTimeKeyDisplay.vue'
+import PairingCard from '~/components/instances/PairingCard.vue'
 import type { Instance, RotatedInstanceKey } from '~/types/api'
 
 const { t } = useI18n()
@@ -114,6 +115,12 @@ async function onDisconnect() {
 function onDeleted() {
   toast.add({ title: t('instances.detail.deleted'), color: 'success' })
   navigateTo('/instances')
+}
+
+// The pairing card emits after the phone scan flips the session to
+// connected; reloading refreshes the badge, JID and disconnect action.
+async function onPaired() {
+  await load()
 }
 
 async function onGenerate() {
@@ -267,6 +274,13 @@ await load()
             />
           </template>
         </UCard>
+
+        <PairingCard
+          :instance-id="instance.id"
+          :status="instance.status"
+          :whatsapp-jid="instance.whatsapp_jid"
+          @paired="onPaired"
+        />
 
         <UCard>
           <template #header>

@@ -73,6 +73,26 @@ export interface RotatedInstanceKey {
   instance_api_key: string
 }
 
+// POST /instances/{id}/connect and GET /instances/{id}/qr answer: the
+// resulting status plus, while pairing, the QR payload and its validity.
+// Mirrors connectResponse in internal/httpapi/connection.go: qr_code and
+// qr_expires_at are absent when the instance is already connected, and GET
+// qr answers 409 instead when there is no QR to scan.
+export interface ConnectResult {
+  status: InstanceStatus
+  qr_code?: string
+  qr_expires_at?: string | null
+}
+
+// GET /instances/{id}/status answer: the connection state of an instance.
+// Mirrors statusResponse in internal/httpapi/connection.go.
+export interface ConnectionStatus {
+  status: InstanceStatus
+  whatsapp_jid: string
+  last_error: string
+  last_connected_at: string | null
+}
+
 // Payload sent to POST /instances. owner_user_id stays unset here: only the
 // global scope and admin sessions may send it, and the console always creates
 // for the signed-in account (user sessions own what they create, admin

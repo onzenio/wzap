@@ -117,6 +117,19 @@
       "submit": "Delete permanently",
       "failed": "Could not delete the instance."
     },
+    "pairing": {
+      "cardTitle": "Pairing",
+      "starting": "Starting pairing...",
+      "scanHint": "Scan this QR code with WhatsApp on your phone to link this instance.",
+      "expiresIn": "Code expires in {seconds}s",
+      "refresh": "Get new code",
+      "refreshing": "Issuing...",
+      "connectedTitle": "Connected",
+      "connectedBody": "This instance is linked to {jid}. No further pairing is needed.",
+      "connectedBodyNoJid": "This instance is linked. No further pairing is needed.",
+      "failed": "Could not start pairing.",
+      "reissueFailed": "Could not refresh the QR code. Trying again..."
+    },
     "key": {
       "cardTitle": "API key",
       "label": "Instance API key",

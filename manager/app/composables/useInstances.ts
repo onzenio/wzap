@@ -1,5 +1,7 @@
 import type {
   AccountUser,
+  ConnectResult,
+  ConnectionStatus,
   CreatedInstance,
   CreateInstanceInput,
   Instance,
@@ -82,6 +84,26 @@ export function useInstances() {
     await raw(`/instances/${id}/disconnect`, { method: 'POST' })
   }
 
+  // POST /instances/{id}/connect starts pairing and answers the QR payload
+  // with its validity, or the connected status with no QR when the instance
+  // needs no pairing (stored credentials or an already-open session).
+  async function connectInstance(id: string): Promise<ConnectResult> {
+    return await api<ConnectResult>(`/instances/${id}/connect`, { method: 'POST' })
+  }
+
+  // GET /instances/{id}/qr returns the current pairing QR, starting a new
+  // pairing when none is active so an expired code is replaced. It throws a
+  // 409 ApiError when the instance is already connected (nothing to scan).
+  async function getPairingQR(id: string): Promise<ConnectResult> {
+    return await api<ConnectResult>(`/instances/${id}/qr`)
+  }
+
+  // GET /instances/{id}/status reports the connection state without touching
+  // the session; the pairing card polls it while a QR is on screen.
+  async function getConnectionStatus(id: string): Promise<ConnectionStatus> {
+    return await api<ConnectionStatus>(`/instances/${id}/status`)
+  }
+
   // Rotate answers 200 with the fresh one-time plaintext key. Only the
   // global scope and admin sessions may call it; user sessions get 403 and
   // the UI keeps this action absent for them.
@@ -108,6 +130,9 @@ export function useInstances() {
     updateInstance,
     deleteInstance,
     disconnectInstance,
+    connectInstance,
+    getPairingQR,
+    getConnectionStatus,
     rotateInstanceKey,
     revokeInstanceKey,
     listAccounts
