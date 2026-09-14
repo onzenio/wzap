@@ -8,12 +8,10 @@ import type {
   UpdateInstanceInput
 } from '~/types/api'
 
-// localStorage marker recording that a plaintext key for the instance was
-// already revealed in this browser (at create or rotate time). The API never
-// re-exposes keys and exposes no has-key flag, so this marker only drives
-// the keyless banner: when absent, the detail view warns the instance may
-// predate keys (or its key was revoked or lost) and offers to generate one.
-// Only the boolean travels to storage, never the key itself.
+// Debt: the API exposes no has-key flag, so this browser-side marker stands
+// in for key presence. A future API field (e.g. has_api_key) should replace
+// hasSeenInstanceKey at the call sites. Only the boolean travels to storage,
+// never the key itself.
 function keySeenStorageKey(id: string): string {
   return `wzap.manager.keySeen.${id}`
 }

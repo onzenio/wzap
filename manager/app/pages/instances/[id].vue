@@ -319,6 +319,9 @@ await load()
             <OneTimeKeyDisplay v-if="freshKey" :api-key="freshKey.instance_api_key" />
 
             <template v-else>
+              <!-- Debt: no has-key flag exists in the API, so the banner is
+                driven by the browser-side key-seen marker. A future API
+                field (e.g. has_api_key) should replace this condition. -->
               <UAlert
                 v-if="!keySeen"
                 color="info"

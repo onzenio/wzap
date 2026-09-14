@@ -75,7 +75,10 @@ async function loadMore() {
 }
 
 function onCreated(instance: CreatedInstance) {
-  items.value = [instance, ...items.value]
+  // The one-time key lives in the modal only: strip it before the created
+  // instance joins the list so it is never retained in list memory.
+  const { instance_api_key: _omit, ...rest } = instance
+  items.value = [rest, ...items.value]
   toast.add({ title: t('instances.create.createdToast'), color: 'success' })
 }
 

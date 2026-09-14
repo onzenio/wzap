@@ -56,7 +56,6 @@
     "title": "Instances",
     "subtitleAdmin": "Every instance in this service.",
     "subtitleUser": "Only the instances owned by this account.",
-    "create": "New instance",
     "empty": "No instances yet. Create the first one to pair a phone.",
     "loadFailed": "Could not load instances.",
     "columns": {
