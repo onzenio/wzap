@@ -23,12 +23,22 @@ type connectionCall struct {
 
 type recordingSink struct {
 	messages    []session.InboundMessage
+	edits       []session.MessageEdit
+	deletes     []session.MessageDelete
 	receipts    []session.Receipt
 	connections []connectionCall
 }
 
 func (r *recordingSink) OnMessage(_ context.Context, msg session.InboundMessage) {
 	r.messages = append(r.messages, msg)
+}
+
+func (r *recordingSink) OnMessageEdit(_ context.Context, edit session.MessageEdit) {
+	r.edits = append(r.edits, edit)
+}
+
+func (r *recordingSink) OnMessageDelete(_ context.Context, del session.MessageDelete) {
+	r.deletes = append(r.deletes, del)
 }
 
 func (r *recordingSink) OnReceipt(_ context.Context, receipt session.Receipt) {

@@ -336,6 +336,21 @@ type instanceSession struct {
 	// client Logout and is replaced in the tests to assert the attempt without
 	// a network handshake.
 	logoutFn func(ctx context.Context) error
+	// sendRevokeFn sends a revoke protocol message. It defaults to SendMessage
+	// and is replaced in the tests to assert the built revocation without a
+	// network round-trip.
+	sendRevokeFn func(ctx context.Context, chat types.JID, msg *waE2E.Message) (whatsmeow.SendResponse, error)
+	// markReadFn sends a read receipt. It defaults to the client MarkRead and
+	// is replaced in the tests to assert the receipt arguments.
+	markReadFn func(ctx context.Context, ids []types.MessageID, timestamp time.Time, chat, sender types.JID) error
+	// pairPhoneFn requests a phone pairing code. It defaults to the client
+	// PairPhone and is replaced in the tests to avoid the pairing handshake.
+	pairPhoneFn func(ctx context.Context, phone string) (string, error)
+
+	// history accumulates the per-instance history-sync feed the Import plan
+	// consumes. Each session owns one, so feeds never cross instance
+	// boundaries. The zero value is ready to use.
+	history session.HistorySyncAccumulator
 
 	mu           sync.RWMutex
 	status       session.Status
@@ -519,6 +534,64 @@ func (s *instanceSession) SendPresence(ctx context.Context, chatJID, state strin
 		return s.client.SendChatPresence(ctx, jid, target.chat, types.ChatPresenceMediaText)
 	}
 	return s.client.SendPresence(ctx, target.user)
+}
+
+// DeleteMessage revokes a sent message for everyone in the chat. The pinned
+// library deprecated RevokeMessage in favor of BuildRevoke + SendMessage, so
+// the session builds the REVOKE protocol message keyed by the original id and
+// sends it to the chat. Connectivity failures surface through the shared
+// classifier (not-connected vs transient).
+func (s *instanceSession) DeleteMessage(ctx context.Context, chatJID, messageID string) error {
+	// ParseJID in the pinned library is lenient (it only splits user/server),
+	// so an empty result is rejected explicitly; anything else parses like
+	// Send does.
+	chat, err := types.ParseJID(chatJID)
+	if err != nil || chat.IsEmpty() {
+		return fmt.Errorf("%w: %s", session.ErrInvalidRecipient, chatJID)
+	}
+	if messageID == "" {
+		return errors.New("delete message: empty message id")
+	}
+	send := s.sendRevokeFn
+	if send == nil {
+		send = func(ctx context.Context, chat types.JID, msg *waE2E.Message) (whatsmeow.SendResponse, error) {
+			return s.client.SendMessage(ctx, chat, msg)
+		}
+	}
+	if _, err := send(ctx, chat, s.client.BuildRevoke(chat, types.EmptyJID, types.MessageID(messageID))); err != nil {
+		return classifySessionError(err)
+	}
+	return nil
+}
+
+// MarkRead sends a read receipt for one message. An empty senderJID falls
+// back to the chat JID (direct chats); group reads carry the author, as the
+// library requires. The receipt is stamped at read time.
+func (s *instanceSession) MarkRead(ctx context.Context, chatJID, senderJID, messageID string) error {
+	chat, err := types.ParseJID(chatJID)
+	if err != nil || chat.IsEmpty() {
+		return fmt.Errorf("%w: %s", session.ErrInvalidRecipient, chatJID)
+	}
+	sender := chat
+	if senderJID != "" {
+		sender, err = types.ParseJID(senderJID)
+		if err != nil || sender.IsEmpty() {
+			return fmt.Errorf("%w: %s", session.ErrInvalidRecipient, senderJID)
+		}
+	}
+	if messageID == "" {
+		return errors.New("mark read: empty message id")
+	}
+	mark := s.markReadFn
+	if mark == nil {
+		mark = func(ctx context.Context, ids []types.MessageID, timestamp time.Time, chat, sender types.JID) error {
+			return s.client.MarkRead(ctx, ids, timestamp, chat, sender)
+		}
+	}
+	if err := mark(ctx, []types.MessageID{types.MessageID(messageID)}, time.Now().UTC(), chat, sender); err != nil {
+		return classifySessionError(err)
+	}
+	return nil
 }
 
 // Disconnect asks WhatsApp to drop the companion device while the connection

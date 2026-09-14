@@ -94,10 +94,43 @@ type Receipt struct {
 	Raw json.RawMessage
 }
 
+// MessageEdit is an edit of a previously received message, translated away
+// from the library types. MessageID is the original message, Text the
+// replacement content and Timestamp the edit moment.
+type MessageEdit struct {
+	InstanceID uuid.UUID
+	MessageID  string
+	ChatJID    string
+	SenderJID  string
+	IsGroup    bool
+	Text       string
+	Timestamp  time.Time
+	// Raw is the best-effort JSON of the raw upstream event, captured by the
+	// adapter for webhook delivery. It is nil when the capture failed.
+	Raw json.RawMessage
+}
+
+// MessageDelete is a delete-for-everyone of a previously received message,
+// translated away from the library types. MessageID is the original message
+// and Timestamp the moment the revocation was observed.
+type MessageDelete struct {
+	InstanceID uuid.UUID
+	MessageID  string
+	ChatJID    string
+	SenderJID  string
+	IsGroup    bool
+	Timestamp  time.Time
+	// Raw is the best-effort JSON of the raw upstream event, captured by the
+	// adapter for webhook delivery. It is nil when the capture failed.
+	Raw json.RawMessage
+}
+
 // EventSink consumes session events. Implementations must be safe for
 // concurrent use and should not block the session for long.
 type EventSink interface {
 	OnMessage(ctx context.Context, msg InboundMessage)
+	OnMessageEdit(ctx context.Context, edit MessageEdit)
+	OnMessageDelete(ctx context.Context, del MessageDelete)
 	OnReceipt(ctx context.Context, receipt Receipt)
 	OnConnection(ctx context.Context, instanceID uuid.UUID, status Status, jid string, reason string)
 }
@@ -118,6 +151,20 @@ type Session interface {
 	// SendPresence reports chat presence ("composing"/"paused") or user
 	// presence ("available"/"unavailable") for a chat.
 	SendPresence(ctx context.Context, chatJID, state string) error
+	// DeleteMessage revokes a sent message for everyone in the chat.
+	DeleteMessage(ctx context.Context, chatJID, messageID string) error
+	// MarkRead sends a read receipt for messageID in chatJID. senderJID is the
+	// author of the message and is required in group chats; an empty sender
+	// falls back to the chat JID for direct chats.
+	MarkRead(ctx context.Context, chatJID, senderJID, messageID string) error
+	// PairPhone requests the 8-character pairing code that links the phone
+	// number without scanning a QR code. The session must already hold an open
+	// pairing channel (Connect first); the code expires with the QR channel.
+	PairPhone(ctx context.Context, number string) (code string, err error)
+	// HistorySyncSnapshot returns the accumulated history-sync feed of the
+	// instance (progress, conversation batches, contacts). The Import plan
+	// consumes it after pairing; each session accumulates only its own feed.
+	HistorySyncSnapshot() HistorySyncSnapshot
 	// Disconnect asks WhatsApp to log the companion device out, then closes
 	// the connection. A session that was never online or whose device is
 	// already gone disconnects locally without failing.

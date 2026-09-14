@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
 	"wzap/internal/session"
@@ -23,12 +25,48 @@ func (s *instanceSession) dispatch(evt any) {
 		if e.Info.IsFromMe || e.Message == nil || s.sink == nil {
 			return
 		}
+		// The translation prefers the alternative (LID) sender address the
+		// pinned library exposes; without one it falls back to the primary
+		// JID and warns, so LID-less peers stay visible in the logs.
+		if e.Info.SenderAlt.IsEmpty() {
+			s.log.Warn("message without alt sender address, using primary JID",
+				"instance_id", s.instanceID, "chat", e.Info.Chat.String(), "message_id", e.Info.ID)
+		}
+		// The pinned library surfaces live edits and deletes as Message events
+		// carrying a MESSAGE_EDIT/REVOKE protocol message (already unwrapped
+		// from EditedMessage by UnwrapRaw), while history-sync edits arrive
+		// with IsEdit set and the id rewritten to the original. Both fork to
+		// the edit/delete sink before the plain message path.
+		if target, ok := messageEditTarget(e); ok {
+			s.sink.OnMessageEdit(context.Background(), editMessage(s.instanceID, e, target))
+			return
+		}
+		// A delete-for-everyone never surfaces as a plain message: with the
+		// original key it becomes a delete event, without one it is dropped
+		// (there is nothing to mirror). The nil check matters because REVOKE
+		// is the zero value of the protocol enum.
+		if protoMsg := e.Message.GetProtocolMessage(); protoMsg != nil &&
+			protoMsg.GetType() == waE2E.ProtocolMessage_REVOKE {
+			if originalID, ok := messageDeleteTarget(e); ok {
+				s.sink.OnMessageDelete(context.Background(), deleteMessage(s.instanceID, e, originalID))
+			} else {
+				s.log.Warn("dropping revoke without original message key",
+					"instance_id", s.instanceID, "chat", e.Info.Chat.String())
+			}
+			return
+		}
 		s.sink.OnMessage(context.Background(), inboundMessage(s.instanceID, e, s.client, s.maxMediaBytes))
 	case *events.Receipt:
 		if s.sink == nil {
 			return
 		}
 		s.sink.OnReceipt(context.Background(), receiptEvent(s.instanceID, e))
+	case *events.HistorySync:
+		s.observeHistorySync(e)
+	case *events.OfflineSyncPreview:
+		s.history.ObservePreview(e.Total)
+	case *events.OfflineSyncCompleted:
+		s.history.MarkComplete()
 	case *events.PairSuccess:
 		s.setStatus(session.StatusConnected, e.ID.String(), "")
 	default:
@@ -78,7 +116,7 @@ func inboundMessage(instanceID uuid.UUID, evt *events.Message, client *whatsmeow
 		InstanceID: instanceID,
 		MessageID:  evt.Info.ID,
 		ChatJID:    evt.Info.Chat.String(),
-		SenderJID:  evt.Info.Sender.String(),
+		SenderJID:  senderJID(evt.Info),
 		IsGroup:    evt.Info.IsGroup,
 		Type:       evt.Info.Type,
 		Text:       messageText(evt.Message),
@@ -126,6 +164,101 @@ func captureRaw(evt any) json.RawMessage {
 		return nil
 	}
 	return data
+}
+
+// editTarget is an edit resolved to the original message id, the replacement
+// content and the edit moment.
+type editTarget struct {
+	originalID string
+	content    *waE2E.Message
+	timestamp  time.Time
+}
+
+// messageEditTarget resolves the edit carried by a Message event, following
+// the levels of the pinned library: a MESSAGE_EDIT protocol message points at
+// the original through its key and carries the replacement content, while a
+// history-sync edit (IsEdit with the id already rewritten) resolves to the
+// event id and content. A REVOKE protocol message is not an edit.
+func messageEditTarget(e *events.Message) (editTarget, bool) {
+	if protoMsg := e.Message.GetProtocolMessage(); protoMsg != nil {
+		switch protoMsg.GetType() {
+		case waE2E.ProtocolMessage_REVOKE:
+			return editTarget{}, false
+		case waE2E.ProtocolMessage_MESSAGE_EDIT:
+			originalID := protoMsg.GetKey().GetID()
+			if originalID == "" {
+				return editTarget{}, false
+			}
+			timestamp := e.Info.Timestamp
+			if ms := protoMsg.GetTimestampMS(); ms > 0 {
+				timestamp = time.UnixMilli(ms).UTC()
+			}
+			return editTarget{
+				originalID: originalID,
+				content:    protoMsg.GetEditedMessage(),
+				timestamp:  timestamp,
+			}, true
+		}
+	}
+	if e.IsEdit {
+		return editTarget{
+			originalID: e.Info.ID,
+			content:    e.Message,
+			timestamp:  e.Info.Timestamp,
+		}, true
+	}
+	return editTarget{}, false
+}
+
+// messageDeleteTarget resolves the original message id revoked by a Message
+// event. Only a REVOKE protocol message carrying the original key qualifies;
+// anything else (including a keyless revoke) is dropped by returning false.
+func messageDeleteTarget(e *events.Message) (string, bool) {
+	protoMsg := e.Message.GetProtocolMessage()
+	if protoMsg == nil || protoMsg.GetType() != waE2E.ProtocolMessage_REVOKE {
+		return "", false
+	}
+	if originalID := protoMsg.GetKey().GetID(); originalID != "" {
+		return originalID, true
+	}
+	return "", false
+}
+
+// editMessage translates a resolved edit away from the library types.
+func editMessage(instanceID uuid.UUID, evt *events.Message, target editTarget) session.MessageEdit {
+	return session.MessageEdit{
+		InstanceID: instanceID,
+		MessageID:  target.originalID,
+		ChatJID:    evt.Info.Chat.String(),
+		SenderJID:  senderJID(evt.Info),
+		IsGroup:    evt.Info.IsGroup,
+		Text:       messageText(target.content),
+		Timestamp:  target.timestamp,
+		Raw:        captureRaw(evt),
+	}
+}
+
+// deleteMessage translates a revocation away from the library types.
+func deleteMessage(instanceID uuid.UUID, evt *events.Message, originalID string) session.MessageDelete {
+	return session.MessageDelete{
+		InstanceID: instanceID,
+		MessageID:  originalID,
+		ChatJID:    evt.Info.Chat.String(),
+		SenderJID:  senderJID(evt.Info),
+		IsGroup:    evt.Info.IsGroup,
+		Timestamp:  evt.Info.Timestamp,
+		Raw:        captureRaw(evt),
+	}
+}
+
+// senderJID resolves the sender of an inbound event, preferring the
+// alternative (LID) address the pinned library exposes on MessageSource and
+// falling back to the primary JID when the event carries none.
+func senderJID(info types.MessageInfo) string {
+	if alt := info.SenderAlt; !alt.IsEmpty() {
+		return alt.String()
+	}
+	return info.Sender.String()
 }
 
 // messageText extracts the text of a message, using the caption of media

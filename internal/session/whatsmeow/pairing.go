@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -142,4 +143,31 @@ func (s *instanceSession) deliverFirstQR(res qrResult) {
 	if first != nil {
 		first <- res
 	}
+}
+
+// pairPhoneDisplayName identifies the companion to the phone during code
+// pairing. The server only accepts common "Browser (OS)" names, and which
+// PairClient type is sent does not matter per the library docs.
+const pairPhoneDisplayName = "Chrome (Windows)"
+
+// PairPhone requests the pairing code that links number without scanning a QR
+// code. The session must already hold an open pairing channel (Connect first,
+// then request the code before the QR channel expires), as the library
+// requires. The number is passed through untouched after trimming.
+func (s *instanceSession) PairPhone(ctx context.Context, number string) (string, error) {
+	number = strings.TrimSpace(number)
+	if number == "" {
+		return "", errors.New("pair phone: empty number")
+	}
+	pair := s.pairPhoneFn
+	if pair == nil {
+		pair = func(ctx context.Context, phone string) (string, error) {
+			return s.client.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, pairPhoneDisplayName)
+		}
+	}
+	code, err := pair(ctx, number)
+	if err != nil {
+		return "", classifySessionError(err)
+	}
+	return code, nil
 }

@@ -27,11 +27,30 @@ type connectionEvent struct {
 
 // recordingSink collects the connection events emitted by a session.
 type recordingSink struct {
-	mu     sync.Mutex
-	events []connectionEvent
+	mu       sync.Mutex
+	events   []connectionEvent
+	messages []session.InboundMessage
+	edits    []session.MessageEdit
+	deletes  []session.MessageDelete
 }
 
-func (r *recordingSink) OnMessage(context.Context, session.InboundMessage) {}
+func (r *recordingSink) OnMessage(_ context.Context, msg session.InboundMessage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.messages = append(r.messages, msg)
+}
+
+func (r *recordingSink) OnMessageEdit(_ context.Context, edit session.MessageEdit) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.edits = append(r.edits, edit)
+}
+
+func (r *recordingSink) OnMessageDelete(_ context.Context, del session.MessageDelete) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deletes = append(r.deletes, del)
+}
 
 func (r *recordingSink) OnReceipt(context.Context, session.Receipt) {}
 
@@ -58,6 +77,51 @@ func (r *recordingSink) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.events)
+}
+
+// messageCount returns how many plain messages were emitted.
+func (r *recordingSink) messageCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.messages)
+}
+
+// editCount returns how many message edits were emitted.
+func (r *recordingSink) editCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.edits)
+}
+
+// deleteCount returns how many message deletes were emitted.
+func (r *recordingSink) deleteCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.deletes)
+}
+
+// lastEdit returns the most recent message edit or fails the test when none
+// was emitted.
+func (r *recordingSink) lastEdit(t *testing.T) session.MessageEdit {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.edits) == 0 {
+		t.Fatal("no message edit was emitted")
+	}
+	return r.edits[len(r.edits)-1]
+}
+
+// lastDelete returns the most recent message delete or fails the test when
+// none was emitted.
+func (r *recordingSink) lastDelete(t *testing.T) session.MessageDelete {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.deletes) == 0 {
+		t.Fatal("no message delete was emitted")
+	}
+	return r.deletes[len(r.deletes)-1]
 }
 
 // sleepRecorder records the backoff delays requested by the reconnect loop.
