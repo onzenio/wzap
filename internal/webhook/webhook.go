@@ -38,7 +38,9 @@ func DefaultEvents() []string {
 
 // ValidateURL checks a webhook URL. Empty stays valid and returns nil (unset,
 // R22). A non-empty URL must parse, use scheme http or https, carry a host,
-// and use http only for loopback hosts; https allows any host.
+// use http only for loopback hosts, carry no userinfo, and pass the SSRF gate
+// (metadata/link-local sempre bloqueados, privado só loopback); https allows
+// any host público.
 func ValidateURL(raw string) (*string, error) {
 	if raw == "" {
 		return nil, nil
@@ -47,6 +49,9 @@ func ValidateURL(raw string) (*string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: malformed url: %v", ErrInvalid, err)
 	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("%w: userinfo is not allowed", ErrInvalid)
+	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "http":
 		host := parsed.Hostname()
@@ -54,7 +59,11 @@ func ValidateURL(raw string) (*string, error) {
 			return nil, fmt.Errorf("%w: http url has no host", ErrInvalid)
 		}
 		if !isLoopbackHost(host) {
-			return nil, fmt.Errorf("%w: http is allowed only for loopback hosts", ErrInvalid)
+			// DNS pode esconder loopback atrás de nome: só aceita http quando
+			// o host literal é loopback ou resolve só para loopback.
+			if ips, err := resolveWebhookHost(strings.TrimSuffix(strings.ToLower(host), ".")); err != nil || !allLoopback(ips) {
+				return nil, fmt.Errorf("%w: http is allowed only for loopback hosts", ErrInvalid)
+			}
 		}
 	case "https":
 		if parsed.Hostname() == "" {
@@ -62,6 +71,13 @@ func ValidateURL(raw string) (*string, error) {
 		}
 	default:
 		return nil, fmt.Errorf("%w: scheme must be http or https", ErrInvalid)
+	}
+	if err := validateWebhookURL(raw); err != nil {
+		// Config é fail-open em falha de DNS (offline/air-gapped): o
+		// delivery revalida fail-closed e bloqueia antes do POST.
+		if !isResolveError(err) {
+			return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
 	}
 	url := raw
 	return &url, nil

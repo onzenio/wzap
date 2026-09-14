@@ -15,10 +15,18 @@ import (
 // within 5s.
 const deliverTimeout = 5 * time.Second
 
-// webhookClient pins the delivery timeout: every webhook POST must finish
-// within 5s. The request additionally carries the caller's context, so
-// cancellation aborts even faster.
-var webhookClient = &http.Client{Timeout: deliverTimeout}
+// webhookClient pins the delivery timeout and the SSRF guard: CheckRedirect
+// revalida cada hop contra o gate (cap em maxWebhookRedirects) e o
+// DialContext resolve uma vez, valida e disca o IP validado (pinning,
+// sem TOCTOU entre validate e connect).
+var webhookClient = &http.Client{
+	Timeout:       deliverTimeout,
+	CheckRedirect: checkWebhookRedirect,
+	Transport: &http.Transport{
+		DialContext:           pinnedDialer,
+		ResponseHeaderTimeout: deliverTimeout,
+	},
+}
 
 // ErrSkipped reports a delivery that must not be attempted: the webhook is
 // disabled, has no URL, or does not subscribe the event type. It is distinct
@@ -44,6 +52,9 @@ var ErrSkipped = errors.New("webhook: delivery skipped")
 func Deliver(ctx context.Context, url, key string, payload []byte) error {
 	if url == "" {
 		return fmt.Errorf("%w: no webhook url", ErrSkipped)
+	}
+	if err := validateWebhookURL(url); err != nil {
+		return fmt.Errorf("webhook deliver to %s: %w", url, err)
 	}
 	if key == "" {
 		return fmt.Errorf("webhook deliver to %s: no instance key cached", url)
