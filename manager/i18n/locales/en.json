@@ -1,0 +1,43 @@
+{
+  "app": {
+    "name": "wzap manager",
+    "tagline": "WhatsApp instances console"
+  },
+  "nav": {
+    "overview": "Overview",
+    "searchPlaceholder": "Search actions and pages..."
+  },
+  "auth": {
+    "loginTitle": "Sign in to wzap",
+    "loginSubtitle": "Use your manager account to continue.",
+    "email": "Email",
+    "password": "Password",
+    "submit": "Sign in",
+    "signingIn": "Signing in...",
+    "loginFailed": "Sign in failed. Check your email and password.",
+    "sessionExpired": "Your session expired. Sign in again."
+  },
+  "userMenu": {
+    "account": "Account",
+    "appearance": "Appearance",
+    "light": "Light",
+    "dark": "Dark",
+    "logout": "Log out",
+    "roleAdmin": "admin",
+    "roleUser": "user"
+  },
+  "overview": {
+    "title": "Overview",
+    "welcome": "Signed in as {email}.",
+    "scopeGlobal": "Operator vision: every instance and account is visible to this admin.",
+    "scopeInstance": "Client vision: only this account's own instances are visible.",
+    "sessionCard": "Session",
+    "scopeCard": "Scope"
+  },
+  "common": {
+    "docs": "API docs",
+    "email": "Email",
+    "role": "Role",
+    "scope": "Scope"
+  }
+}
