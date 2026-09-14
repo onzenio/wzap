@@ -452,14 +452,240 @@ func TestHandleMessageGroupPrefixesSender(t *testing.T) {
 func TestHandleMessageUnknownTypeWarnsAndSkips(t *testing.T) {
 	fx := newFixture(nil)
 	msg := testMessagePayload()
-	msg.Type = "reaction"
+	msg.Type = "unknown_future_type"
 	msg.Text = ""
+	msg.Raw = nil
 
 	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
 		t.Fatalf("unknown type must skip without error: %v", err)
 	}
 	if n := len(fx.cli.creates()); n != 0 {
 		t.Errorf("CreateMessage calls = %d, want 0", n)
+	}
+}
+
+// rawMessage wraps a proto-JSON message body the way the session capture
+// does: the trimmed upstream event nests it under "Message".
+func rawMessage(t *testing.T, body string) json.RawMessage {
+	t.Helper()
+	raw := json.RawMessage(`{"Message": ` + body + `}`)
+	var probe struct {
+		Message map[string]any `json:"Message"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("test raw is not JSON: %v", err)
+	}
+	return raw
+}
+
+func TestHandleMessageMirrorsListAsText(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "list"
+	msg.Text = ""
+	msg.Raw = rawMessage(t, `{"listMessage": {
+		"title": "Cardápio", "description": "Escolha um item",
+		"buttonText": "Ver itens", "footerText": "Obrigado",
+		"sections": [{"title": "Lanches", "rows": [
+			{"title": "X-Burger", "description": "pão com carne", "rowId": "1"},
+			{"title": "X-Salada", "description": "", "rowId": "2"}
+		]}]}}`)
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	calls := fx.cli.creates()
+	if len(calls) != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (list as formatted text)", len(calls))
+	}
+	got := calls[0].req.Content
+	for _, want := range []string{"Cardápio", "X-Burger", "pão com carne", "X-Salada", "[Ver itens]", "Obrigado"} {
+		if !contains(got, want) {
+			t.Errorf("list content = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+func TestHandleMessageMirrorsReactionAsText(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "reaction"
+	msg.Text = ""
+	msg.Raw = rawMessage(t, `{"reactionMessage": {"text": "❤️", "key": {"id": "WA-ORIG-1"}}}`)
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	calls := fx.cli.creates()
+	if len(calls) != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (reaction as descriptive text)", len(calls))
+	}
+	got := calls[0].req.Content
+	if !contains(got, "❤️") || !contains(got, "WA-ORIG-1") {
+		t.Errorf("reaction content = %q, want the emoji linked to the original key", got)
+	}
+}
+
+func TestHandleMessageMirrorsButtonsAsText(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "buttons"
+	msg.Text = ""
+	msg.Raw = rawMessage(t, `{"buttonsMessage": {
+		"contentText": "Pague com PIX", "footerText": "Loja Exemplo",
+		"buttons": [
+			{"buttonId": "pix", "buttonText": {"displayText": "Copiar chave PIX"}},
+			{"buttonId": "site", "buttonText": {"displayText": "Abrir site"}}
+		]}}`)
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	calls := fx.cli.creates()
+	if len(calls) != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (buttons as text)", len(calls))
+	}
+	got := calls[0].req.Content
+	for _, want := range []string{"Pague com PIX", "Copiar chave PIX", "Abrir site"} {
+		if !contains(got, want) {
+			t.Errorf("buttons content = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+func TestHandleMessageMirrorsAdWithThumbnail(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "text"
+	msg.Text = ""
+	// "thumb-bytes" base64ed, the way proto []byte marshals in the capture.
+	msg.Raw = rawMessage(t, `{"extendedTextMessage": {
+		"text": "Oferta imperdível",
+		"contextInfo": {"externalAdReply": {
+			"title": "Metade do preço", "body": "só hoje",
+			"sourceUrl": "https://loja.example/oferta",
+			"thumbnail": "dGh1bWItYnl0ZXM="}}}}`)
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	atts := fx.cli.attachments()
+	if len(atts) != 1 {
+		t.Fatalf("attachment calls = %d, want 1 (ad thumbnail)", len(atts))
+	}
+	got := atts[0].req
+	if string(got.File) != "thumb-bytes" {
+		t.Errorf("thumbnail bytes = %q, want the decoded preview", string(got.File))
+	}
+	for _, want := range []string{"Metade do preço", "só hoje", "https://loja.example/oferta"} {
+		if !contains(got.Content, want) {
+			t.Errorf("ad content = %q, want it to contain %q", got.Content, want)
+		}
+	}
+}
+
+func TestHandleMessageMirrorsTextOnlyAd(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "text"
+	msg.Text = ""
+	msg.Raw = rawMessage(t, `{"extendedTextMessage": {
+		"text": "",
+		"contextInfo": {"externalAdReply": {
+			"title": "Oferta", "body": "só hoje",
+			"sourceUrl": "https://loja.example/oferta"}}}}`)
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	calls := fx.cli.creates()
+	if len(calls) != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (text-only ad)", len(calls))
+	}
+	if got := calls[0].req.Content; !contains(got, "Oferta") {
+		t.Errorf("ad content = %q, want the ad title", got)
+	}
+	if n := len(fx.cli.attachments()); n != 0 {
+		t.Errorf("attachment calls = %d, want 0 without thumbnail bytes", n)
+	}
+}
+
+func TestHandleMessageMirrorsContactsArray(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "contact"
+	msg.Text = ""
+	msg.Raw = rawMessage(t, `{"contactsArrayMessage": {"contacts": [
+		{"displayName": "Ada", "vcard": "BEGIN:VCARD\nTEL:+5511999999999\nEND:VCARD"},
+		{"displayName": "Bob", "vcard": "BEGIN:VCARD\nTEL:+5511888888888\nEND:VCARD"}
+	]}}`)
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	calls := fx.cli.creates()
+	if len(calls) != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (contact list as text)", len(calls))
+	}
+	got := calls[0].req.Content
+	if !contains(got, "Ada") || !contains(got, "+5511999999999") || !contains(got, "Bob") {
+		t.Errorf("contacts content = %q, want both contacts", got)
+	}
+}
+
+func TestHandleMessageMirrorsOrderAndProduct(t *testing.T) {
+	fx := newFixture(nil)
+	ctx := context.Background()
+
+	order := testMessagePayload()
+	order.MessageID = "WA-ORDER-1"
+	order.Type = "order"
+	order.Text = ""
+	order.Raw = rawMessage(t, `{"orderMessage": {"orderId": "123", "orderTitle": "Pedido da loja"}}`)
+	if err := fx.worker.HandleMessage(ctx, uuid.New(), uuid.New(), order); err != nil {
+		t.Fatalf("order HandleMessage: %v", err)
+	}
+
+	product := testMessagePayload()
+	product.MessageID = "WA-PRODUCT-1"
+	product.Type = "product"
+	product.Text = ""
+	product.Raw = rawMessage(t, `{"productMessage": {"product": {"title": "Camiseta", "description": "algodão"}}}`)
+	if err := fx.worker.HandleMessage(ctx, uuid.New(), uuid.New(), product); err != nil {
+		t.Fatalf("product HandleMessage: %v", err)
+	}
+
+	calls := fx.cli.creates()
+	if len(calls) != 2 {
+		t.Fatalf("CreateMessage calls = %d, want 2 (order + product)", len(calls))
+	}
+	if !contains(calls[0].req.Content, "123") {
+		t.Errorf("order content = %q, want the order id", calls[0].req.Content)
+	}
+	if !contains(calls[1].req.Content, "Camiseta") {
+		t.Errorf("product content = %q, want the product title", calls[1].req.Content)
+	}
+}
+
+func TestHandleMessageMirrorsStickerViaMedia(t *testing.T) {
+	fx := newFixture(nil)
+	msg := testMessagePayload()
+	msg.Type = "sticker"
+	msg.Text = ""
+	msg.Media = &MediaRef{MediaID: uuid.New(), Mimetype: "image/webp", Filename: "sticker.webp"}
+
+	if err := fx.worker.HandleMessage(context.Background(), uuid.New(), uuid.New(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	atts := fx.cli.attachments()
+	if len(atts) != 1 {
+		t.Fatalf("attachment calls = %d, want 1 (sticker rides the media path)", len(atts))
+	}
+	// The file name and mime come from the media store record (the fake
+	// replays photo.jpg/image/jpeg); what matters is the sticker bytes
+	// flowing through the attachment path instead of warn+skip.
+	if got := atts[0].req; string(got.File) != "fake-bytes" {
+		t.Errorf("sticker attachment bytes = %q, want the stored media", string(got.File))
 	}
 }
 

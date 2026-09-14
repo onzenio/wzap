@@ -134,6 +134,147 @@ func GroupPrefix(phone, name, body string) string {
 	return prefix + "\n" + body
 }
 
+// ListRow is one selectable row of a list message.
+type ListRow struct {
+	Title       string
+	Description string
+}
+
+// ListSection groups list rows under a section title.
+type ListSection struct {
+	Title string
+	Rows  []ListRow
+}
+
+// List formats a list/selection message as text: title, description, one
+// bullet per row (description after an em dash), the button label in
+// brackets and the footer last. Empty parts are omitted; everything empty
+// yields "" so the caller keeps the warn+skip path.
+func List(title, description, button, footer string, sections []ListSection) string {
+	lines := make([]string, 0, 8)
+	if title != "" {
+		lines = append(lines, title)
+	}
+	if description != "" {
+		lines = append(lines, description)
+	}
+	for _, section := range sections {
+		if section.Title != "" {
+			lines = append(lines, section.Title+":")
+		}
+		for _, row := range section.Rows {
+			if row.Title == "" && row.Description == "" {
+				continue
+			}
+			line := "\u2022 " + row.Title
+			if row.Description != "" {
+				line += " \u2014 " + row.Description
+			}
+			lines = append(lines, line)
+		}
+	}
+	if button != "" {
+		lines = append(lines, "["+button+"]")
+	}
+	if footer != "" {
+		lines = append(lines, footer)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ListResponse formats a list/button answer as text: the visible title plus
+// the selected row or button id so the choice stays traceable.
+func ListResponse(title, selectedID string) string {
+	switch {
+	case title != "" && selectedID != "":
+		return title + "\nResposta: " + selectedID
+	case title != "":
+		return title
+	default:
+		return "Resposta: " + selectedID
+	}
+}
+
+// Reaction formats a reaction as descriptive text linked to the original
+// message key. An empty emoji means the reaction was removed.
+func Reaction(emoji, originalKey string) string {
+	if emoji == "" {
+		if originalKey == "" {
+			return "Rea\u00e7\u00e3o removida"
+		}
+		return "Rea\u00e7\u00e3o removida da mensagem " + originalKey
+	}
+	if originalKey == "" {
+		return "Reagiu com " + emoji
+	}
+	return "Reagiu com " + emoji + " \u00e0 mensagem " + originalKey
+}
+
+// Interactive formats buttons/interactive content (including PIX keys sent
+// as interactive or native-flow buttons) as text: header, body, footer plus
+// one bullet per button label. Empty parts are omitted.
+func Interactive(header, body, footer string, buttons []string) string {
+	lines := make([]string, 0, len(buttons)+3)
+	if header != "" {
+		lines = append(lines, header)
+	}
+	if body != "" {
+		lines = append(lines, body)
+	}
+	for _, button := range buttons {
+		if button != "" {
+			lines = append(lines, "\u2022 "+button)
+		}
+	}
+	if footer != "" {
+		lines = append(lines, footer)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Order formats a payment/order message as text with its order id.
+func Order(orderID, title string) string {
+	lines := make([]string, 0, 2)
+	if title != "" {
+		lines = append(lines, title)
+	}
+	if orderID != "" {
+		lines = append(lines, "Pedido "+orderID)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Product formats a product message as text: title plus description. Both
+// empty yields "" so the caller keeps the warn+skip path.
+func Product(title, description string) string {
+	lines := make([]string, 0, 2)
+	if title != "" {
+		lines = append(lines, title)
+	}
+	if description != "" {
+		lines = append(lines, description)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Ad formats a click-to-WhatsApp ad preview as text: title, body and source
+// URL. The preview thumbnail (when present) travels separately as an
+// attachment; an ad with no text at all yields "" and still mirrors through
+// the thumbnail.
+func Ad(title, body, sourceURL string) string {
+	lines := make([]string, 0, 3)
+	if title != "" {
+		lines = append(lines, title)
+	}
+	if body != "" {
+		lines = append(lines, body)
+	}
+	if sourceURL != "" {
+		lines = append(lines, sourceURL)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // drawingExts are image extensions that Chatwoot cannot preview inline, so
 // they must travel as generic documents even though their MIME is image/*.
 var drawingExts = map[string]bool{

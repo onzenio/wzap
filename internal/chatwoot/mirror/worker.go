@@ -10,6 +10,7 @@ package mirror
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -309,16 +310,27 @@ func (w *Worker) HandleMessage(ctx context.Context, instanceID, eventID uuid.UUI
 		return err
 	}
 
-	content := w.messageContent(msg)
-	if content == "" && msg.Media == nil {
+	content, thumbnail := w.messageContent(msg)
+	if content == "" && msg.Media == nil && len(thumbnail) == 0 {
 		log.Warn("skipping message with unmappable type", "type", msg.Type)
 		return nil
 	}
 
 	var mirrored *client.Message
-	if msg.Media != nil {
+	switch {
+	case msg.Media != nil:
 		mirrored, err = w.mirrorAttachment(ctx, log, rt, conversationID, msg, content)
-	} else {
+	case len(thumbnail) > 0:
+		mirrored, err = rt.cli.CreateMessageWithAttachment(ctx, conversationID, client.CreateMessageWithAttachmentRequest{
+			Content:           content,
+			MessageType:       client.MessageTypeIncoming,
+			ContentAttributes: messageAttributes(msg),
+			SourceID:          waSourceID(msg.MessageID),
+			FileName:          "ad-thumbnail.jpg",
+			ContentType:       "image/jpeg",
+			File:              thumbnail,
+		})
+	default:
 		mirrored, err = rt.cli.CreateMessage(ctx, conversationID, client.CreateMessageRequest{
 			Content:           content,
 			MessageType:       client.MessageTypeIncoming,
@@ -913,20 +925,22 @@ func (w *Worker) resolveContact(ctx context.Context, rt *instanceRuntime, sender
 	return contact, nil
 }
 
-// messageContent renders the display text of a message: structured content
-// (location, contact) is extracted from the upstream raw event when the flat
-// text is empty, markdown is converted to the Chatwoot form, and group
-// messages carry the sender prefix.
-func (w *Worker) messageContent(msg MessagePayload) string {
+// messageContent renders the display text of a message plus an optional
+// thumbnail attachment (ad previews): structured content (location, contact,
+// lists, reactions, interactive buttons, orders, products, ads) is extracted
+// from the upstream raw event when the flat text is empty, markdown is
+// converted to the Chatwoot form, and group messages carry the sender prefix.
+func (w *Worker) messageContent(msg MessagePayload) (string, []byte) {
 	text := mapper.Text(mapper.TextInput{Body: msg.Text})
+	var thumbnail []byte
 	if text == "" && len(msg.Raw) > 0 {
-		text = structuredText(msg.Type, msg.Raw)
+		text, thumbnail = structuredText(msg.Raw)
 	}
 	content := mapper.MarkdownToChatwoot(text)
 	if msg.IsGroup {
 		content = mapper.GroupPrefix(senderPhone(msg.FromJID), "", content)
 	}
-	return content
+	return content, thumbnail
 }
 
 // mirrorAttachment uploads stored inbound media with its caption. When the
@@ -1239,32 +1253,324 @@ func connectionText(notice ConnectionNotice) string {
 	return body.String()
 }
 
-// structuredText extracts display text for structured types (location,
-// contact) from the trimmed upstream event. The second return reports
-// whether extraction succeeded.
-func structuredText(msgType string, raw json.RawMessage) string {
+// structuredText extracts display text (plus an optional ad thumbnail) for
+// structured types from the trimmed upstream event. The wire type does not
+// always name the content, so every known shape is probed in a fixed order
+// and the first non-empty rendering wins.
+//
+// Covered today: location, contact (single and array), lists and list
+// answers, reactions, interactive and buttons messages and answers
+// (including PIX keys sent as interactive buttons), orders, products and ad
+// previews (text plus thumbnail bytes when present). Stickers need no text:
+// they travel as media attachments through the regular media flow (see
+// messageMedia in internal/session/whatsmeow/events.go).
+//
+// Known limitations (warn+skip in HandleMessage): polls and poll votes, call
+// events, protocol and history-sync notices, encrypted reactions and any
+// future type without a text equivalent.
+func structuredText(raw json.RawMessage) (string, []byte) {
 	var env struct {
 		Message map[string]any `json:"Message"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil || env.Message == nil {
+		return "", nil
+	}
+	message := env.Message
+	if text := locationText(message); text != "" {
+		return text, nil
+	}
+	if text := contactText(message); text != "" {
+		return text, nil
+	}
+	if text := listText(message); text != "" {
+		return text, nil
+	}
+	if text := reactionText(message); text != "" {
+		return text, nil
+	}
+	if text := interactiveText(message); text != "" {
+		return text, nil
+	}
+	if text := orderText(message); text != "" {
+		return text, nil
+	}
+	if text := productText(message); text != "" {
+		return text, nil
+	}
+	if text, thumbnail := adText(message); text != "" || len(thumbnail) > 0 {
+		return text, thumbnail
+	}
+	return "", nil
+}
+
+// locationText renders a shared location, or "" when absent.
+func locationText(message map[string]any) string {
+	lat, lok := numberField(message, "locationMessage", "degreesLatitude")
+	lng, lngok := numberField(message, "locationMessage", "degreesLongitude")
+	if !lok || !lngok {
 		return ""
 	}
-	switch msgType {
-	case "location":
-		lat, lok := numberField(env.Message, "locationMessage", "degreesLatitude")
-		lng, lngok := numberField(env.Message, "locationMessage", "degreesLongitude")
-		if !lok || !lngok {
-			return ""
-		}
-		name, _ := stringField(env.Message, "locationMessage", "name")
-		addr, _ := stringField(env.Message, "locationMessage", "address")
-		return mapper.Location(lat, lng, name, addr)
-	case "contact":
-		name, _ := stringField(env.Message, "contactMessage", "displayName")
-		vcard, _ := stringField(env.Message, "contactMessage", "vcard")
+	name, _ := stringField(message, "locationMessage", "name")
+	addr, _ := stringField(message, "locationMessage", "address")
+	return mapper.Location(lat, lng, name, addr)
+}
+
+// contactText renders a shared contact, or every contact of a contacts
+// array joined by a blank line, or "" when absent.
+func contactText(message map[string]any) string {
+	if _, ok := message["contactMessage"]; ok {
+		name, _ := stringField(message, "contactMessage", "displayName")
+		vcard, _ := stringField(message, "contactMessage", "vcard")
 		return mapper.Contact(name, vcardPhones(vcard))
 	}
+	array, ok := message["contactsArrayMessage"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	rawContacts, _ := array["contacts"].([]any)
+	var parts []string
+	for _, rawContact := range rawContacts {
+		contact, ok := rawContact.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := contact["displayName"].(string)
+		vcard, _ := contact["vcard"].(string)
+		if part := mapper.Contact(name, vcardPhones(vcard)); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// listText renders a list message or a list answer, or "" when absent.
+func listText(message map[string]any) string {
+	if list, ok := message["listMessage"].(map[string]any); ok {
+		title, _ := list["title"].(string)
+		description, _ := list["description"].(string)
+		button, _ := list["buttonText"].(string)
+		footer, _ := list["footerText"].(string)
+		var sections []mapper.ListSection
+		for _, rawSection := range childList(list, "sections") {
+			section, ok := rawSection.(map[string]any)
+			if !ok {
+				continue
+			}
+			sectionTitle, _ := section["title"].(string)
+			var rows []mapper.ListRow
+			for _, rawRow := range childList(section, "rows") {
+				row, ok := rawRow.(map[string]any)
+				if !ok {
+					continue
+				}
+				rowTitle, _ := row["title"].(string)
+				rowDescription, _ := row["description"].(string)
+				if rowTitle == "" && rowDescription == "" {
+					continue
+				}
+				rows = append(rows, mapper.ListRow{Title: rowTitle, Description: rowDescription})
+			}
+			sections = append(sections, mapper.ListSection{Title: sectionTitle, Rows: rows})
+		}
+		return mapper.List(title, description, button, footer, sections)
+	}
+	if response, ok := message["listResponseMessage"].(map[string]any); ok {
+		title, _ := response["title"].(string)
+		selected, _ := childMap(response, "singleSelectReply")["selectedRowId"].(string)
+		if title == "" {
+			title, _ = response["description"].(string)
+		}
+		if title != "" || selected != "" {
+			return mapper.ListResponse(title, selected)
+		}
+	}
 	return ""
+}
+
+// reactionText renders a reaction as descriptive text linked to the original
+// message key, or "" when absent. Encrypted reactions carry no readable
+// content and stay unmapped.
+func reactionText(message map[string]any) string {
+	reaction, ok := message["reactionMessage"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	emoji, _ := reaction["text"].(string)
+	key, _ := childMap(reaction, "key")["id"].(string)
+	if emoji == "" && key == "" {
+		return ""
+	}
+	return mapper.Reaction(emoji, key)
+}
+
+// interactiveText renders interactive, buttons and answer messages (the
+// shapes PIX keys travel in), or "" when absent.
+func interactiveText(message map[string]any) string {
+	if interactive, ok := message["interactiveMessage"].(map[string]any); ok {
+		header := childMap(interactive, "header")
+		headerText, _ := header["text"].(string)
+		if headerText == "" {
+			headerText, _ = header["title"].(string)
+		}
+		body, _ := childMap(interactive, "body")["text"].(string)
+		footer, _ := childMap(interactive, "footer")["text"].(string)
+		var buttons []string
+		if flow, ok := interactive["nativeFlowMessage"].(map[string]any); ok {
+			buttons = nativeFlowButtons(flow)
+		}
+		return mapper.Interactive(headerText, body, footer, buttons)
+	}
+	if buttons, ok := message["buttonsMessage"].(map[string]any); ok {
+		content, _ := buttons["contentText"].(string)
+		footer, _ := buttons["footerText"].(string)
+		var labels []string
+		for _, rawButton := range childList(buttons, "buttons") {
+			button, ok := rawButton.(map[string]any)
+			if !ok {
+				continue
+			}
+			label, _ := childMap(button, "buttonText")["displayText"].(string)
+			if label == "" {
+				label, _ = button["buttonId"].(string)
+			}
+			labels = append(labels, label)
+		}
+		return mapper.Interactive("", content, footer, labels)
+	}
+	if response, ok := message["buttonsResponseMessage"].(map[string]any); ok {
+		selected, _ := response["selectedButtonId"].(string)
+		if selected != "" {
+			return mapper.ListResponse("", selected)
+		}
+	}
+	if response, ok := message["interactiveResponseMessage"].(map[string]any); ok {
+		if body, _ := childMap(response, "body")["text"].(string); body != "" {
+			return body
+		}
+	}
+	return ""
+}
+
+// nativeFlowButtons extracts button labels from a native-flow message. The
+// labels live inside a JSON params blob per button; unparsable buttons fall
+// back to their flow name so the choice stays visible.
+func nativeFlowButtons(flow map[string]any) []string {
+	var buttons []string
+	for _, rawButton := range childList(flow, "buttons") {
+		button, ok := rawButton.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := button["name"].(string)
+		params, _ := button["buttonParamsJson"].(string)
+		label := nativeFlowLabel(params)
+		if label == "" {
+			label = name
+		}
+		if label != "" {
+			buttons = append(buttons, label)
+		}
+	}
+	return buttons
+}
+
+// nativeFlowLabel reads the display text of one native-flow button params
+// blob, accepting the known key variants and "" for anything else.
+func nativeFlowLabel(params string) string {
+	if strings.TrimSpace(params) == "" {
+		return ""
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(params), &decoded); err != nil {
+		return ""
+	}
+	for _, key := range []string{"display_text", "displayText", "title", "text"} {
+		if label, _ := decoded[key].(string); strings.TrimSpace(label) != "" {
+			return strings.TrimSpace(label)
+		}
+	}
+	return ""
+}
+
+// orderText renders a payment/order message, or "" when absent.
+func orderText(message map[string]any) string {
+	order, ok := message["orderMessage"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	orderID, _ := order["orderId"].(string)
+	title, _ := order["orderTitle"].(string)
+	if orderID == "" && title == "" {
+		return ""
+	}
+	return mapper.Order(orderID, title)
+}
+
+// productText renders a product message, or "" when absent.
+func productText(message map[string]any) string {
+	product, ok := message["productMessage"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	snapshot, _ := product["product"].(map[string]any)
+	title, _ := snapshot["title"].(string)
+	description, _ := snapshot["description"].(string)
+	if title == "" {
+		title, _ = product["body"].(string)
+	}
+	if description == "" {
+		description, _ = product["footer"].(string)
+	}
+	return mapper.Product(title, description)
+}
+
+// adText renders a click-to-WhatsApp ad preview plus its thumbnail bytes
+// when present. Text-only ads return just the text; a thumbnail-only preview
+// returns the bytes with empty text so it still mirrors as an attachment.
+func adText(message map[string]any) (string, []byte) {
+	extended, ok := message["extendedTextMessage"].(map[string]any)
+	if !ok {
+		return "", nil
+	}
+	reply, ok := childMap(extended, "contextInfo")["externalAdReply"].(map[string]any)
+	if !ok {
+		return "", nil
+	}
+	title, _ := reply["title"].(string)
+	body, _ := reply["body"].(string)
+	sourceURL, _ := reply["sourceUrl"].(string)
+	thumbnail := decodeThumb(reply["thumbnail"])
+	if thumbnail == nil {
+		thumbnail = decodeThumb(extended["JPEGThumbnail"])
+	}
+	return mapper.Ad(title, body, sourceURL), thumbnail
+}
+
+// childMap returns the nested object of m under key, or nil when absent.
+func childMap(m map[string]any, key string) map[string]any {
+	nested, _ := m[key].(map[string]any)
+	return nested
+}
+
+// childList returns the nested array of m under key, or nil when absent.
+func childList(m map[string]any, key string) []any {
+	list, _ := m[key].([]any)
+	return list
+}
+
+// decodeThumb decodes base64 thumbnail bytes from proto JSON ([]byte
+// marshals as base64); "" or invalid input yields nil so the caller falls
+// back to text-only.
+func decodeThumb(v any) []byte {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return nil
+	}
+	data, err := base64.StdEncoding.DecodeString(s)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return data
 }
 
 // numberField navigates two map levels for a numeric field.

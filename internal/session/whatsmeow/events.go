@@ -281,11 +281,15 @@ func messageText(msg *waE2E.Message) string {
 
 // messageMedia returns the media metadata and the downloadable attachment of a
 // message, when it carries media. The length is the size announced by the
-// source, or zero when the proto omits it.
+// source, or zero when the proto omits it. Stickers ride the same path as
+// images (they are DownloadableMessage with an image/* mime): the Chatwoot
+// mirror uploads them as attachments through the regular media flow.
 func messageMedia(msg *waE2E.Message) (mime, filename string, length int64, downloadable whatsmeow.DownloadableMessage) {
 	switch {
 	case msg.GetImageMessage() != nil:
 		return msg.GetImageMessage().GetMimetype(), "", mediaLength(msg.GetImageMessage().GetFileLength()), msg.GetImageMessage()
+	case msg.GetStickerMessage() != nil:
+		return msg.GetStickerMessage().GetMimetype(), "sticker.webp", mediaLength(msg.GetStickerMessage().GetFileLength()), msg.GetStickerMessage()
 	case msg.GetVideoMessage() != nil:
 		return msg.GetVideoMessage().GetMimetype(), "", mediaLength(msg.GetVideoMessage().GetFileLength()), msg.GetVideoMessage()
 	case msg.GetAudioMessage() != nil:

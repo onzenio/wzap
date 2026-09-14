@@ -147,20 +147,32 @@ e importa o histórico via SQL direto no Postgres do Chatwoot. Sem
 
 | Método e rota | Corpo/Resposta |
 | --- | --- |
-| `PUT /instances/{id}/chatwoot` | Configuração do conector → `200`; validação falha → `422`. |
-| `GET /instances/{id}/chatwoot` | `200` com a configuração e a `webhook_url`. |
-| `POST /instances/{id}/chatwoot/import` | Import manual → `202` com `{"imported":N}`. |
+| `PUT /instances/{id}/chatwoot` | Configuração do conector → `200`; validação falha → `422`. O `token` é aceito só na escrita e nunca volta nas respostas. |
+| `GET /instances/{id}/chatwoot` | `200` com a configuração (sem o `token`) e a `webhook_url`. |
+| `POST /instances/{id}/chatwoot/import` | Import manual → `202` com `{"imported":N}`, onde N conta mensagens importadas (contatos não entram na conta). |
 | `POST /chatwoot/webhook/{id}` | Webhook aberto por desenho (sem auth), responde corpo de bot. |
+
+O espelho cobre texto, mídias (imagem, vídeo, áudio, documento e figurinha
+via anexo), contato simples e em lista, localização, listas, reactions,
+botões interativos (incluindo PIX), pedidos, produtos e anúncios (com a
+miniatura anexada quando os bytes vêm no evento). Enquetes, chamadas, avisos
+de protocolo e reactions criptografadas não têm equivalente em texto e são
+puladas com `warn`, sem derrubar o worker.
 
 O import ordena por telefone+tempo, deduplica por `source_id` (`WAID:`,
 compartilhado com o espelho), respeita `days_limit` e dispara em três
 gatilhos: automático pós-pareamento (uma vez), manual (`POST .../import`) e
 cron de 30 min com janela de 6 h (limpa acumuladores e o cache do conector);
-início e resultado avisam na conversa operacional em pt-BR.
+falha num lote retorna a contagem parcial junto com o erro; início e
+resultado avisam na conversa operacional em pt-BR.
 
-Riscos operacionais: token guardado em claro, webhook aberto por desenho e
+Riscos operacionais: token guardado em claro mas nunca ecoado (só escrita),
+webhook aberto por desenho com busca de anexos sob allowlist SSRF
+(só `http`/`https`, no máximo 3 redirects, metadados/link-local sempre
+bloqueados, IP privado/loopback só para o host do Chatwoot configurado) e
 SQL direto no banco do Chatwoot (frágil a upgrades — módulo isolado,
-desligável pela URI).
+desligável pela URI; `display_id` com retry limitado em conflito de unicidade
+contra escritas do Rails).
 
 ## Eventos
 

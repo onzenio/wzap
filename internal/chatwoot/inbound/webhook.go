@@ -155,9 +155,12 @@ type Chats interface {
 	CreateMessage(ctx context.Context, conversationID int64, content string, private bool) (int64, error)
 }
 
-// Downloader fetches attachment bytes from data_url.
+// Downloader fetches attachment bytes from data_url. allowHost is the
+// instance's configured Chatwoot url: private/loopback data_url hosts are
+// accepted only when they match it (self-hosted Chatwoot), everything else
+// follows the SSRF policy in ssrf.go.
 type Downloader interface {
-	Download(ctx context.Context, url string) ([]byte, string, error)
+	Download(ctx context.Context, url, allowHost string) ([]byte, string, error)
 }
 
 // CacheClearer drops connector caches for the clearcache command.
@@ -340,7 +343,7 @@ func (h *Handler) handleOutgoing(ctx context.Context, instanceID uuid.UUID, cfg 
 			if strings.TrimSpace(att.DataURL) == "" {
 				continue
 			}
-			data, mime, err := h.downloader.Download(ctx, att.DataURL)
+			data, mime, err := h.downloader.Download(ctx, att.DataURL, cfg.URL)
 			if err != nil {
 				h.log.Warn("attachment download failed", "instance_id", instanceID, "error", err)
 				h.postPrivateNote(ctx, cfg, conversationIDOf(payload), fmt.Sprintf("Falha ao baixar anexo: %v", err))

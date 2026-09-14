@@ -120,6 +120,83 @@ func TestGroupPrefix(t *testing.T) {
 	}
 }
 
+func TestList(t *testing.T) {
+	got := List("Cardápio", "Escolha", "Ver", "Obrigado", []ListSection{
+		{Title: "Lanches", Rows: []ListRow{
+			{Title: "X-Burger", Description: "pão com carne"},
+			{Title: "X-Salada"},
+		}},
+	})
+	want := "Cardápio\nEscolha\nLanches:\n• X-Burger — pão com carne\n• X-Salada\n[Ver]\nObrigado"
+	if got != want {
+		t.Errorf("List(...) = %q, want %q", got, want)
+	}
+	if empty := List("", "", "", "", nil); empty != "" {
+		t.Errorf("List(empty) = %q, want empty for the warn+skip path", empty)
+	}
+}
+
+func TestListResponse(t *testing.T) {
+	if got := ListResponse("Cardápio", "1"); got != "Cardápio\nResposta: 1" {
+		t.Errorf("ListResponse(title, id) = %q", got)
+	}
+	if got := ListResponse("", "pix"); got != "Resposta: pix" {
+		t.Errorf("ListResponse(id only) = %q", got)
+	}
+}
+
+func TestReaction(t *testing.T) {
+	if got := Reaction("❤️", "WA-1"); got != "Reagiu com ❤️ à mensagem WA-1" {
+		t.Errorf("Reaction(emoji, key) = %q", got)
+	}
+	if got := Reaction("", "WA-1"); !containsStr(got, "WA-1") {
+		t.Errorf("Reaction(removed, key) = %q, want the key linked", got)
+	}
+}
+
+func TestInteractive(t *testing.T) {
+	got := Interactive("", "Pague com PIX", "Loja", []string{"Copiar chave PIX", ""})
+	want := "Pague com PIX\n• Copiar chave PIX\nLoja"
+	if got != want {
+		t.Errorf("Interactive(...) = %q, want %q", got, want)
+	}
+	if empty := Interactive("", "", "", nil); empty != "" {
+		t.Errorf("Interactive(empty) = %q, want empty for the warn+skip path", empty)
+	}
+}
+
+func TestOrderAndProduct(t *testing.T) {
+	if got := Order("123", "Pedido da loja"); got != "Pedido da loja\nPedido 123" {
+		t.Errorf("Order(...) = %q", got)
+	}
+	if got := Product("Camiseta", "algodão"); got != "Camiseta\nalgodão" {
+		t.Errorf("Product(...) = %q", got)
+	}
+	if empty := Product("", ""); empty != "" {
+		t.Errorf("Product(empty) = %q, want empty for the warn+skip path", empty)
+	}
+}
+
+func TestAd(t *testing.T) {
+	got := Ad("Metade do preço", "só hoje", "https://loja.example/oferta")
+	want := "Metade do preço\nsó hoje\nhttps://loja.example/oferta"
+	if got != want {
+		t.Errorf("Ad(...) = %q, want %q", got, want)
+	}
+	if empty := Ad("", "", ""); empty != "" {
+		t.Errorf("Ad(empty) = %q, want empty (thumbnail-only still mirrors)", empty)
+	}
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAttachmentKind(t *testing.T) {
 	cases := []struct {
 		name      string

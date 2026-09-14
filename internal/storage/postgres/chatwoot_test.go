@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -252,5 +253,60 @@ func TestChatwootMessagePutGetDeleteByInstance(t *testing.T) {
 	}
 	if _, err := msgRepo.GetByWAKey(ctx, instance.ID, want.WAKey); !errors.Is(err, storage.ErrNotFound) {
 		t.Errorf("GetByWAKey(after delete) err = %v, want %v", err, storage.ErrNotFound)
+	}
+}
+
+// TestLatestByConversationTiebreaksDeterministically pins migration 00004:
+// Migrate applies the covering index on a clean DB, and ties on created_at
+// resolve to the larger chatwoot_message_id instead of an arbitrary row.
+func TestLatestByConversationTiebreaksDeterministically(t *testing.T) {
+	ctx := context.Background()
+	pool := postgrestest.NewPool(t)
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate test schema: %v", err)
+	}
+
+	var indexRegclass *string
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('chatwoot_messages_conversation_idx')::text`).Scan(&indexRegclass); err != nil {
+		t.Fatalf("lookup covering index: %v", err)
+	}
+	if indexRegclass == nil {
+		t.Fatal("covering index chatwoot_messages_conversation_idx missing after Migrate")
+	}
+
+	instances := NewInstanceRepository(pool)
+	instance, err := instances.Create(ctx, model.Instance{
+		ID:     uuid.New(),
+		Name:   "chatwoot-latest",
+		Status: "disconnected",
+	})
+	if err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	// Two rows sharing the exact same created_at: Put stamps now() per row,
+	// so the tie is seeded with explicit SQL.
+	stamp := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO chatwoot_messages (instance_id, wa_key, chatwoot_message_id, conversation_id, inbox_id, contact_source_id, created_at)
+		 VALUES ($1, 'WA-TIE-1', 11, 55, 7, 'source', $2), ($1, 'WA-TIE-2', 22, 55, 7, 'source', $2)`,
+		instance.ID, stamp); err != nil {
+		t.Fatalf("seed tied rows: %v", err)
+	}
+
+	_, msgRepo := NewChatwootRepositories(pool)
+	got, err := msgRepo.LatestByConversation(ctx, instance.ID, 55)
+	if err != nil {
+		t.Fatalf("LatestByConversation: %v", err)
+	}
+	if got.ChatwootMessageID != 22 {
+		t.Errorf("LatestByConversation ChatwootMessageID = %d, want 22 (deterministic tiebreak)", got.ChatwootMessageID)
+	}
+	if got.WAKey != "WA-TIE-2" {
+		t.Errorf("LatestByConversation WAKey = %q, want WA-TIE-2", got.WAKey)
+	}
+
+	if _, err := msgRepo.LatestByConversation(ctx, instance.ID, 999); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("LatestByConversation(unknown) err = %v, want %v", err, storage.ErrNotFound)
 	}
 }

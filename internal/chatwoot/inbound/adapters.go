@@ -60,12 +60,28 @@ func NewHTTPDownloader(maxBytes int64) *HTTPDownloader {
 }
 
 // Download GETs url and returns its bytes plus the response content type.
-func (d *HTTPDownloader) Download(ctx context.Context, url string) ([]byte, string, error) {
+// The SSRF policy (ssrf.go) gates the initial URL and every redirect hop
+// against allowHost (the instance Chatwoot url); at most
+// maxAttachmentRedirects hops are followed.
+func (d *HTTPDownloader) Download(ctx context.Context, url, allowHost string) ([]byte, string, error) {
+	if err := validateAttachmentURL(url, allowHost); err != nil {
+		return nil, "", err
+	}
+	client := *d.client
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > maxAttachmentRedirects {
+			return fmt.Errorf("download %s: stopped after %d redirects", url, maxAttachmentRedirects)
+		}
+		if err := validateAttachmentURL(req.URL.String(), allowHost); err != nil {
+			return err
+		}
+		return nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	resp, err := d.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", err
 	}

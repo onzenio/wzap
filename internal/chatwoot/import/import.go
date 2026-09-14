@@ -2,6 +2,7 @@ package chatimport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wzap/internal/session"
@@ -49,7 +51,9 @@ const (
 //
 // A nil pool means the import is disabled: ImportContacts returns 0, nil
 // without touching the network. An empty inboxName still upserts contacts but
-// writes no labels or tags.
+// writes no labels or tags. On a chunk failure the rows of the earlier chunks
+// are already committed, so the error returns the partial count written so
+// far instead of zero.
 func ImportContacts(ctx context.Context, pool *pgxpool.Pool, accountID, inboxName string, contacts []session.HistorySyncContact) (int, error) {
 	if pool == nil {
 		return 0, nil
@@ -75,12 +79,14 @@ func ImportContacts(ctx context.Context, pool *pgxpool.Pool, accountID, inboxNam
 			return 0, err
 		}
 	}
-	for _, chunk := range chunkContacts(rows, contactChunkSize) {
+	total := 0
+	for i, chunk := range chunkContacts(rows, contactChunkSize) {
 		if err := importContactChunk(ctx, pool, account, tagID, tag != "", chunk); err != nil {
-			return 0, err
+			return total, fmt.Errorf("chunk %d: %w", i, err)
 		}
+		total += len(chunk)
 	}
-	return len(rows), nil
+	return total, nil
 }
 
 // MessagesDeps carries the inputs of ImportMessages. Pool nil means the
@@ -114,7 +120,9 @@ type MessagesDeps struct {
 // tagged history backfill.
 //
 // A nil pool means the import is disabled: ImportMessages returns 0, nil
-// without touching the network.
+// without touching the network. On a chunk failure the rows of the earlier
+// chunks are already committed, so the error returns the partial count
+// written so far instead of zero.
 func ImportMessages(ctx context.Context, deps MessagesDeps, inboxID int64, msgs []session.HistorySyncMessage) (int, error) {
 	if deps.Pool == nil {
 		return 0, nil
@@ -141,12 +149,12 @@ func ImportMessages(ctx context.Context, deps MessagesDeps, inboxID int64, msgs 
 		}
 	}
 	total := 0
-	for _, chunk := range chunkMessageRows(rows, messageChunkSize) {
+	for i, chunk := range chunkMessageRows(rows, messageChunkSize) {
 		n, err := importMessageChunk(ctx, deps.Pool, account, inboxID, senderUser, chunk)
-		if err != nil {
-			return 0, err
-		}
 		total += n
+		if err != nil {
+			return total, fmt.Errorf("chunk %d: %w", i, err)
+		}
 	}
 	return total, nil
 }
@@ -455,7 +463,18 @@ func ensureMessageContacts(ctx context.Context, pool *pgxpool.Pool, account int6
 // outside writer can interleave. The whole ensure is covered, not just the
 // allocation: the same race would otherwise duplicate the contact_inbox link
 // and the conversation itself.
+//
+// The mutex does not cover Chatwoot Rails itself: Rails allocates display_id
+// through its own single sequence outside this process, so a Rails write
+// landing between our MAX()+1 and our INSERT still collides. That window is
+// closed by the bounded unique-violation retry in ensureConversationLocked,
+// which recomputes MAX and retries instead of failing the import.
 var conversationMu sync.Mutex
+
+// displayIDAttempts bounds the display_id unique-violation retries: each
+// attempt recomputes MAX(display_id), so five attempts survive a burst of
+// concurrent Rails allocations without retrying forever.
+const displayIDAttempts = 5
 
 // ensureConversation returns the conversation of (account, inbox, contact),
 // creating the contact_inbox link and the conversation when absent. The
@@ -463,6 +482,13 @@ var conversationMu sync.Mutex
 func ensureConversation(ctx context.Context, pool *pgxpool.Pool, account, inboxID, contactID int64) (int64, error) {
 	conversationMu.Lock()
 	defer conversationMu.Unlock()
+	return ensureConversationLocked(ctx, pool, account, inboxID, contactID)
+}
+
+// ensureConversationLocked is the mutex-held body of ensureConversation,
+// split out so tests can drive the cross-process race (Rails writing outside
+// conversationMu) by calling it concurrently.
+func ensureConversationLocked(ctx context.Context, pool queryRower, account, inboxID, contactID int64) (int64, error) {
 	var convID int64
 	err := pool.QueryRow(ctx, `SELECT id FROM conversations WHERE account_id = $1 AND inbox_id = $2 AND contact_id = $3 ORDER BY id LIMIT 1`,
 		account, inboxID, contactID).Scan(&convID)
@@ -485,17 +511,49 @@ func ensureConversation(ctx context.Context, pool *pgxpool.Pool, account, inboxI
 	} else if err != nil {
 		return 0, fmt.Errorf("%s: lookup contact_inbox: %w", opImportMessages, err)
 	}
-	var display int64
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(MAX(display_id), 0) + 1 FROM conversations WHERE account_id = $1`, account).Scan(&display); err != nil {
-		return 0, fmt.Errorf("%s: next display id: %w", opImportMessages, err)
+	for attempt := 1; ; attempt++ {
+		var display int64
+		if err := pool.QueryRow(ctx, `SELECT COALESCE(MAX(display_id), 0) + 1 FROM conversations WHERE account_id = $1`, account).Scan(&display); err != nil {
+			return 0, fmt.Errorf("%s: next display id: %w", opImportMessages, err)
+		}
+		var convID int64
+		err = pool.QueryRow(ctx, `INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id, display_id, created_at, updated_at, last_activity_at)
+			VALUES ($1, $2, 0, $3, $4, $5, NOW(), NOW(), NOW()) RETURNING id`,
+			account, inboxID, contactID, inboxLinkID, display).Scan(&convID)
+		if err == nil {
+			return convID, nil
+		}
+		if !isUniqueViolation(err) || attempt >= displayIDAttempts {
+			return 0, fmt.Errorf("%s: ensure conversation: %w", opImportMessages, err)
+		}
+		// A concurrent Rails allocation stole our display_id. Our own
+		// conversation may have appeared as well, so re-check before
+		// recomputing MAX and retrying.
+		var existing int64
+		if lerr := pool.QueryRow(ctx, `SELECT id FROM conversations WHERE account_id = $1 AND inbox_id = $2 AND contact_id = $3 ORDER BY id LIMIT 1`,
+			account, inboxID, contactID).Scan(&existing); lerr == nil {
+			return existing, nil
+		} else if lerr != pgx.ErrNoRows {
+			return 0, fmt.Errorf("%s: lookup conversation: %w", opImportMessages, lerr)
+		}
 	}
-	err = pool.QueryRow(ctx, `INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id, display_id, created_at, updated_at, last_activity_at)
-		VALUES ($1, $2, 0, $3, $4, $5, NOW(), NOW(), NOW()) RETURNING id`,
-		account, inboxID, contactID, inboxLinkID, display).Scan(&convID)
-	if err != nil {
-		return 0, fmt.Errorf("%s: ensure conversation: %w", opImportMessages, err)
+}
+
+// queryRower is the query surface ensureConversationLocked needs. Both
+// *pgxpool.Pool and pgx.Tx satisfy it; tests stub it to script the
+// display_id race deterministically.
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505), the signature of a lost display_id race.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
 	}
-	return convID, nil
+	return false
 }
 
 // contactRow is one normalized contact ready for the Chatwoot schema: phone

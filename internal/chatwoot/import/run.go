@@ -46,8 +46,9 @@ type RunDeps struct {
 // RunImport imports one instance feed snapshot into Chatwoot and returns how
 // many messages were written. Contacts import first when flagged, then
 // messages; the accumulator is cleared only on success so a failure keeps
-// the feed for the next trigger. A nil pool (import disabled) or a config
-// with both import flags off is a no-op returning 0, nil.
+// the feed for the next trigger. A messages failure returns the partial
+// message count written so far with the error. A nil pool (import disabled)
+// or a config with both import flags off is a no-op returning 0, nil.
 func RunImport(ctx context.Context, deps RunDeps) (int, error) {
 	if deps.Pool == nil {
 		return 0, nil
@@ -87,7 +88,7 @@ func RunImport(ctx context.Context, deps RunDeps) (int, error) {
 			Placeholder: deps.Placeholder,
 		}, inboxID, msgs)
 		if err != nil {
-			return 0, err
+			return imported, err
 		}
 	}
 	deps.Feed.ResetHistorySync()

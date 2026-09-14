@@ -168,10 +168,13 @@ func (r *ChatwootMessageRepository) GetByChatwootID(ctx context.Context, instanc
 
 // LatestByConversation returns the newest correlation of a conversation or
 // storage.ErrNotFound. It backs the inbound MESSAGE_READ marking of the last
-// received message.
+// received message. The tiebreak on chatwoot_message_id keeps the choice
+// deterministic when two rows share created_at (same instant), matching the
+// (instance_id, conversation_id, created_at DESC, chatwoot_message_id DESC)
+// covering index from migration 00004.
 func (r *ChatwootMessageRepository) LatestByConversation(ctx context.Context, instanceID uuid.UUID, conversationID int64) (*model.ChatwootMessage, error) {
 	msg, err := scanChatwootMessage(r.pool.QueryRow(ctx,
-		`SELECT `+chatwootMessageColumns+` FROM chatwoot_messages WHERE instance_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 1`,
+		`SELECT `+chatwootMessageColumns+` FROM chatwoot_messages WHERE instance_id = $1 AND conversation_id = $2 ORDER BY created_at DESC, chatwoot_message_id DESC LIMIT 1`,
 		instanceID, conversationID))
 	if err != nil {
 		return nil, mapChatwootError("get latest chatwoot message", err)

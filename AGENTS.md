@@ -63,16 +63,27 @@ direct Chatwoot Postgres SQL (`internal/chatwoot/import`, inert without
 - Envs: `WZAP_CHATWOOT_ENABLED`, `WZAP_CHATWOOT_BOT_CONTACT`,
   `WZAP_CHATWOOT_MESSAGE_READ`, `WZAP_CHATWOOT_MESSAGE_DELETE`,
   `WZAP_CHATWOOT_IMPORT_DB_URL`, `WZAP_CHATWOOT_IMPORT_PLACEHOLDER`.
-- Routes: `PUT`/`GET /instances/{id}/chatwoot` (dual auth),
-  `POST /instances/{id}/chatwoot/import` → `202 {"imported":N}` (dual auth),
+- Routes: `PUT`/`GET /instances/{id}/chatwoot` (dual auth, token write-only,
+  responses mask it), `POST /instances/{id}/chatwoot/import` → `202
+  {"imported":N}` with N counting messages only (dual auth),
   `POST /chatwoot/webhook/{id}` open by design.
+- Mirror: text/media (incl. stickers), contacts (single+array), locations,
+  lists, reactions, interactive/buttons (incl. PIX), orders, products, ads
+  (thumbnail attached when bytes present); polls/calls/protocol notices
+  warn+skip.
 - Import: phone+time order, `WAID:` source_id dedup shared with the mirror,
-  `days_limit` window, triggers auto post-pairing once (fire-and-forget) +
-  manual + 30min cron (6h window, clears accumulators and the connector
-  cache), pt-BR operational notices. Shutdown stops the import scheduler
-  before the relay; the import `Pool.Close` has its single owner in `serve()`.
-- Operational risks: plaintext token, open webhook, direct SQL against the
-  Chatwoot database (isolated module, URI-guarded).
+  `days_limit` window, chunk failures return the partial count with the
+  error, display_id retries `UNIQUE(account_id,display_id)` conflicts
+  (bounded, Rails allocates outside the mutex), triggers auto post-pairing
+  once (fire-and-forget) + manual + 30min cron (6h window, clears accumulators
+  and the connector cache), pt-BR operational notices. Shutdown stops the
+  import scheduler before the relay; the import `Pool.Close` has its single
+  owner in `serve()`.
+- Operational risks: token stored in plaintext but never echoed (write-only),
+  open webhook (SSRF-gated attachment fetch: http/https only, ≤3 redirects,
+  metadata/link-local always blocked, private hosts only for the configured
+  Chatwoot url), direct SQL against the Chatwoot database (isolated module,
+  URI-guarded).
 
 ## Conventions And Gotchas
 

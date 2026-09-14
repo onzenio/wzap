@@ -2,6 +2,8 @@ package chatimport
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -132,6 +134,59 @@ func TestImportContactsUpsertsIndividualsAndGroups(t *testing.T) {
 		if rerun[table] != want {
 			t.Errorf("%s after re-run = %d, want %d (must not duplicate)", table, rerun[table], want)
 		}
+	}
+}
+
+// TestImportContactsChunkErrorReturnsPartial pins the partial-progress rule:
+// when the second chunk fails, the committed first chunk is reported instead
+// of zero. A row trigger rejects one name to fail the later chunk.
+func TestImportContactsChunkErrorReturnsPartial(t *testing.T) {
+	pool := postgrestest.NewPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, minimalChatwootSchema); err != nil {
+		t.Fatalf("create minimal Chatwoot schema: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION reject_boom_contact() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.name = 'BOOM' THEN
+				RAISE EXCEPTION 'boom-contact';
+			END IF;
+			RETURN NEW;
+		END; $$;
+		CREATE TRIGGER reject_boom_contact BEFORE INSERT ON contacts
+			FOR EACH ROW EXECUTE FUNCTION reject_boom_contact()`); err != nil {
+		t.Fatalf("create reject trigger: %v", err)
+	}
+
+	var contacts []session.HistorySyncContact
+	for i := 0; i < contactChunkSize+1; i++ {
+		name := fmt.Sprintf("Bulk %d", i)
+		if i == contactChunkSize {
+			name = "BOOM"
+		}
+		contacts = append(contacts, session.HistorySyncContact{
+			JID:  fmt.Sprintf("5511999%05d@s.whatsapp.net", i),
+			Name: name,
+		})
+	}
+
+	got, err := ImportContacts(ctx, pool, "1", "Test Inbox", contacts)
+	if err == nil {
+		t.Fatal("ImportContacts() error = nil, want the rejected chunk to fail")
+	}
+	if !strings.Contains(err.Error(), "boom-contact") {
+		t.Errorf("ImportContacts() error = %q, want it to wrap the chunk failure", err.Error())
+	}
+	if got != contactChunkSize {
+		t.Errorf("ImportContacts() = %d, want %d (first committed chunk, not zero)", got, contactChunkSize)
+	}
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM contacts`).Scan(&total); err != nil {
+		t.Fatalf("count contacts: %v", err)
+	}
+	if total != contactChunkSize {
+		t.Errorf("contacts = %d, want %d committed", total, contactChunkSize)
 	}
 }
 

@@ -278,10 +278,30 @@ func handleChatwootWebhook(instances InstanceService, inb ChatwootInbound, globa
 			return
 		}
 		if status != http.StatusOK {
-			Error(w, r, status, "chatwoot_disabled", "chatwoot connector is disabled")
+			code, message := chatwootWebhookError(status)
+			Error(w, r, status, code, message)
 			return
 		}
 		writeChatwootBotBody(w)
+	}
+}
+
+// chatwootWebhookError maps a non-200 inbound status to its error code.
+// chatwoot_disabled is reserved for the 400 global-off gate; every other
+// status keeps its own code so callers can tell a disabled connector apart
+// from a missing instance or an internal failure.
+func chatwootWebhookError(status int) (code, message string) {
+	switch status {
+	case http.StatusBadRequest:
+		return "chatwoot_disabled", "chatwoot connector is disabled"
+	case http.StatusNotFound:
+		return "not_found", "instance not found"
+	case http.StatusTooManyRequests:
+		return "rate_limited", "rate limited"
+	case http.StatusInternalServerError:
+		return "internal_error", "internal server error"
+	default:
+		return "chatwoot_error", "chatwoot webhook failed"
 	}
 }
 
@@ -293,7 +313,9 @@ func writeChatwootBotBody(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"content": ""})
 }
 
-// newChatwootConfigResponse maps a stored config plus its webhook URL.
+// newChatwootConfigResponse maps a stored config plus its webhook URL. The
+// token is accepted on write only and never echoed back: responses always
+// carry an empty token so a read cannot leak the Chatwoot credential.
 func newChatwootConfigResponse(cfg *model.ChatwootConfig, webhookURL string) chatwootConfigResponse {
 	ignoreJIDs := cfg.IgnoreJIDs
 	if ignoreJIDs == nil {
@@ -304,7 +326,7 @@ func newChatwootConfigResponse(cfg *model.ChatwootConfig, webhookURL string) cha
 		Enabled:             cfg.Enabled,
 		URL:                 cfg.URL,
 		AccountID:           cfg.AccountID,
-		Token:               cfg.Token,
+		Token:               "",
 		NameInbox:           cfg.NameInbox,
 		SignMsg:             cfg.SignMsg,
 		SignDelimiter:       cfg.SignDelimiter,

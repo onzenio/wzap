@@ -2,12 +2,16 @@ package chatimport
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wzap/internal/session"
@@ -463,6 +467,261 @@ func TestImportMessagesConcurrentTriggersShareDisplayIDs(t *testing.T) {
 	}
 	if distinct != len(phones) {
 		t.Errorf("distinct display_ids = %d, want %d (no shared allocation)", distinct, len(phones))
+	}
+}
+
+// TestImportMessagesChunkErrorReturnsPartial pins the partial-progress rule:
+// when the second chunk fails, the committed first chunk is reported instead
+// of zero. A row trigger rejects one content value to fail the later chunk.
+func TestImportMessagesChunkErrorReturnsPartial(t *testing.T) {
+	pool := postgrestest.NewPool(t)
+	ctx := context.Background()
+	seedMessageWorld(t, ctx, pool, []session.HistorySyncContact{
+		{JID: "5511999887766@s.whatsapp.net", Name: "Alice"},
+	})
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION reject_boom() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.content = 'BOOM' THEN
+				RAISE EXCEPTION 'boom-content';
+			END IF;
+			RETURN NEW;
+		END; $$;
+		CREATE TRIGGER reject_boom BEFORE INSERT ON messages
+			FOR EACH ROW EXECUTE FUNCTION reject_boom()`); err != nil {
+		t.Fatalf("create reject trigger: %v", err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var msgs []session.HistorySyncMessage
+	for i := 0; i < 600; i++ {
+		text := "bulk message"
+		if i == 550 {
+			text = "BOOM"
+		}
+		msgs = append(msgs, session.HistorySyncMessage{
+			MessageID: "PARTIAL-" + strconv.Itoa(i),
+			ChatJID:   "5511999887766@s.whatsapp.net",
+			SenderJID: "5511999887766@s.whatsapp.net",
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			Text:      text,
+		})
+	}
+
+	got, err := ImportMessages(ctx, MessagesDeps{Pool: pool, AccountID: "1"}, 7, msgs)
+	if err == nil {
+		t.Fatal("ImportMessages() error = nil, want the rejected chunk to fail")
+	}
+	if !strings.Contains(err.Error(), "boom-content") {
+		t.Errorf("ImportMessages() error = %q, want it to wrap the chunk failure", err.Error())
+	}
+	if got != 500 {
+		t.Errorf("ImportMessages() = %d, want 500 (first committed chunk, not zero)", got)
+	}
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages`).Scan(&total); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if total != 500 {
+		t.Errorf("messages = %d, want 500 committed", total)
+	}
+}
+
+// scriptRow is a pgx.Row stub: scan assigns the scripted values or fails.
+type scriptRow struct {
+	values []any
+	err    error
+}
+
+func (r scriptRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) != len(r.values) {
+		return errors.New("script row arity mismatch")
+	}
+	for i, v := range r.values {
+		switch d := dest[i].(type) {
+		case *int64:
+			*d = v.(int64)
+		default:
+			return errors.New("script row unsupported destination")
+		}
+	}
+	return nil
+}
+
+// scriptRower replays a QueryRow script in call order, so the display_id
+// race is deterministic: a scripted 23505 stands in for the racing Rails
+// row landing between our MAX()+1 and our INSERT.
+type scriptRower struct {
+	rows  []pgx.Row
+	calls int
+}
+
+func (s *scriptRower) QueryRow(context.Context, string, ...any) pgx.Row {
+	if s.calls >= len(s.rows) {
+		return scriptRow{err: errors.New("script exhausted")}
+	}
+	row := s.rows[s.calls]
+	s.calls++
+	return row
+}
+
+func missedRow() pgx.Row { return scriptRow{err: pgx.ErrNoRows} }
+
+// TestEnsureConversationLockedRetriesUniqueViolation pins the cross-process
+// race: the first INSERT loses to a racing writer (scripted 23505), the
+// retry recomputes MAX and succeeds without duplicating the conversation.
+func TestEnsureConversationLockedRetriesUniqueViolation(t *testing.T) {
+	stub := &scriptRower{rows: []pgx.Row{
+		missedRow(),                        // lookup ours: miss
+		scriptRow{values: []any{int64(9)}}, // contact_inbox link hit
+		scriptRow{values: []any{int64(7)}}, // MAX()+1 -> 7
+		scriptRow{err: &pgconn.PgError{Code: "23505", Message: "duplicate display"}}, // stolen
+		missedRow(),                          // re-lookup ours: still miss
+		scriptRow{values: []any{int64(8)}},   // recomputed MAX()+1 -> 8
+		scriptRow{values: []any{int64(123)}}, // retry insert succeeds
+	}}
+
+	convID, err := ensureConversationLocked(context.Background(), stub, 1, 7, 42)
+	if err != nil {
+		t.Fatalf("ensureConversationLocked() error = %v, want success after retry", err)
+	}
+	if convID != 123 {
+		t.Errorf("ensureConversationLocked() = %d, want 123 (retried insert)", convID)
+	}
+	if stub.calls != len(stub.rows) {
+		t.Errorf("QueryRow calls = %d, want %d (lookup, link, alloc, insert, re-lookup, realloc, insert)", stub.calls, len(stub.rows))
+	}
+}
+
+// TestEnsureConversationLockedRetryExhaustion pins the bound: a writer
+// stealing every attempt fails the ensure instead of retrying forever.
+func TestEnsureConversationLockedRetryExhaustion(t *testing.T) {
+	rows := []pgx.Row{
+		missedRow(),                        // lookup ours: miss
+		scriptRow{values: []any{int64(9)}}, // contact_inbox link hit
+	}
+	for i := 0; i < displayIDAttempts; i++ {
+		rows = append(rows,
+			scriptRow{values: []any{int64(int64(i + 1))}},                                // MAX()+1
+			scriptRow{err: &pgconn.PgError{Code: "23505", Message: "duplicate display"}}, // stolen
+		)
+		// Every failed attempt but the last re-checks our conversation
+		// before recomputing MAX; the last attempt returns the error.
+		if i < displayIDAttempts-1 {
+			rows = append(rows, missedRow())
+		}
+	}
+	stub := &scriptRower{rows: rows}
+
+	if _, err := ensureConversationLocked(context.Background(), stub, 1, 7, 42); err == nil {
+		t.Fatal("ensureConversationLocked() error = nil, want the exhausted retry to fail")
+	} else if !strings.Contains(err.Error(), "ensure conversation") {
+		t.Errorf("ensureConversationLocked() error = %q, want it to name the operation", err.Error())
+	}
+	if stub.calls != len(rows) {
+		t.Errorf("QueryRow calls = %d, want %d (exactly %d attempts plus a re-lookup after each but the last)", stub.calls, len(rows), displayIDAttempts)
+	}
+}
+
+// TestEnsureConversationLockedNonUniqueFailsFast pins that a non-unique
+// failure (e.g. foreign key) never retries.
+func TestEnsureConversationLockedNonUniqueFailsFast(t *testing.T) {
+	stub := &scriptRower{rows: []pgx.Row{
+		missedRow(),                        // lookup ours: miss
+		scriptRow{values: []any{int64(9)}}, // contact_inbox link hit
+		scriptRow{values: []any{int64(7)}}, // MAX()+1
+		scriptRow{err: &pgconn.PgError{Code: "23503", Message: "foreign key"}}, // not a display race
+	}}
+
+	if _, err := ensureConversationLocked(context.Background(), stub, 1, 7, 42); err == nil {
+		t.Fatal("ensureConversationLocked() error = nil, want the foreign-key failure")
+	}
+	if stub.calls != 4 {
+		t.Errorf("QueryRow calls = %d, want 4 (no retry on non-unique errors)", stub.calls)
+	}
+}
+
+// TestEnsureConversationLockedConcurrentCrossProcess drives the real
+// cross-process race: concurrent locked-body calls (mutex bypassed, as Rails
+// writes are) over distinct contacts all succeed with one conversation per
+// contact and distinct display_ids. Four racers stay within the retry bound:
+// production has at most two concurrent writers (this process plus Rails),
+// so a deeper burst than the bound is out of scope.
+func TestEnsureConversationLockedConcurrentCrossProcess(t *testing.T) {
+	pool := postgrestest.NewPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, minimalChatwootSchema+extendedChatwootSchema); err != nil {
+		t.Fatalf("create extended Chatwoot schema: %v", err)
+	}
+	const racers = 4
+	var feed []session.HistorySyncContact
+	for i := 0; i < racers; i++ {
+		feed = append(feed, session.HistorySyncContact{
+			JID:  fmt.Sprintf("55119998%04d@s.whatsapp.net", i),
+			Name: fmt.Sprintf("Racer %d", i),
+		})
+	}
+	if _, err := ImportContacts(ctx, pool, "1", "Test Inbox", feed); err != nil {
+		t.Fatalf("seed race contacts: %v", err)
+	}
+	ids := make([]int64, 0, racers)
+	for _, c := range feed {
+		user, _, _ := strings.Cut(c.JID, "@")
+		var id int64
+		if err := pool.QueryRow(ctx, `SELECT id FROM contacts WHERE account_id = 1 AND identifier = $1`, user).Scan(&id); err != nil {
+			t.Fatalf("query race contact: %v", err)
+		}
+		ids = append(ids, id)
+		if _, err := pool.Exec(ctx, `INSERT INTO contact_inboxes (contact_id, inbox_id, source_id) VALUES ($1, 7, $2)`, id, "race-"+user); err != nil {
+			t.Fatalf("seed race link: %v", err)
+		}
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, racers)
+	for _, id := range ids {
+		wg.Add(1)
+		go func(contactID int64) {
+			defer wg.Done()
+			<-start
+			if _, err := ensureConversationLocked(context.Background(), pool, 1, 7, contactID); err != nil {
+				errs <- err
+			}
+		}(id)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("ensureConversationLocked() concurrent error = %v (want no unique violation)", err)
+	}
+
+	var conversations, distinct int
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT display_id) FROM conversations WHERE account_id = 1`).Scan(&conversations, &distinct); err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if conversations != racers || distinct != racers {
+		t.Errorf("conversations = %d distinct = %d, want %d/%d (one per contact, no shared display_id)", conversations, distinct, racers, racers)
+	}
+}
+
+// TestIsUniqueViolation pins the 23505 detector behind the display_id retry.
+func TestIsUniqueViolation(t *testing.T) {
+	if !isUniqueViolation(&pgconn.PgError{Code: "23505"}) {
+		t.Error("isUniqueViolation(23505) = false, want true")
+	}
+	if isUniqueViolation(&pgconn.PgError{Code: "23503"}) {
+		t.Error("isUniqueViolation(23503) = true, want false (foreign key is not a display race)")
+	}
+	if isUniqueViolation(errors.New("boom")) {
+		t.Error("isUniqueViolation(generic) = true, want false")
+	}
+	if isUniqueViolation(nil) {
+		t.Error("isUniqueViolation(nil) = true, want false")
 	}
 }
 

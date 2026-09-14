@@ -3,6 +3,9 @@ package inbound
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -143,7 +146,7 @@ type fakeDownloader struct {
 	calls []string
 }
 
-func (f *fakeDownloader) Download(_ context.Context, url string) ([]byte, string, error) {
+func (f *fakeDownloader) Download(_ context.Context, url, _ string) ([]byte, string, error) {
 	f.calls = append(f.calls, url)
 	if f.err != nil {
 		return nil, "", f.err
@@ -887,5 +890,135 @@ func TestHandleOperationalBotDiscards(t *testing.T) {
 	}
 	if len(fx.chats.creates) != 0 {
 		t.Fatalf("confirm messages = %d, want 0 for a bot message in the operational conversation", len(fx.chats.creates))
+	}
+}
+
+// TestValidateAttachmentURLPolicy pins the SSRF allowlist: public URLs
+// pass, metadata/link-local are always blocked, and private/loopback hosts
+// pass only for the configured Chatwoot host (self-hosted case).
+func TestValidateAttachmentURLPolicy(t *testing.T) {
+	old := lookupIP
+	defer func() { lookupIP = old }()
+	lookupIP = func(host string) ([]net.IP, error) {
+		switch host {
+		case "public.example":
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		case "internal.example":
+			return []net.IP{net.ParseIP("10.1.2.3")}, nil
+		default:
+			return nil, errors.New("no such host")
+		}
+	}
+	chatwoot := "https://chatwoot.example.com"
+	cases := []struct {
+		name   string
+		url    string
+		allow  string
+		reject bool
+	}{
+		{"public https passes", "https://93.184.216.34/rails/a.jpg", chatwoot, false},
+		{"public hostname passes", "https://public.example/rails/a.jpg", chatwoot, false},
+		{"metadata IP rejected", "http://169.254.169.254/latest/meta-data", chatwoot, true},
+		{"alibaba metadata rejected", "http://100.100.100.200/latest/meta-data", chatwoot, true},
+		{"private non-chatwoot rejected", "https://192.168.1.10/rails/a.jpg", chatwoot, true},
+		{"loopback non-chatwoot rejected", "http://127.0.0.1:8080/rails/a.jpg", chatwoot, true},
+		{"private matching chatwoot host allowed", "http://10.0.0.5/rails/a.jpg", "http://10.0.0.5", false},
+		{"loopback matching chatwoot host allowed", "http://127.0.0.1:8080/rails/a.jpg", "http://127.0.0.1:8080", false},
+		{"metadata matching chatwoot host still rejected", "http://169.254.169.254/x", "http://169.254.169.254", true},
+		{"ftp scheme rejected", "ftp://93.184.216.34/a.jpg", chatwoot, true},
+		{"file scheme rejected", "file:///etc/passwd", chatwoot, true},
+		{"private hostname rejected", "https://internal.example/a.jpg", chatwoot, true},
+		{"private hostname allowed for self-host", "https://internal.example/a.jpg", "https://internal.example", false},
+		{"unresolvable rejected", "https://ghost.example/a.jpg", chatwoot, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAttachmentURL(tc.url, tc.allow)
+			if tc.reject && err == nil {
+				t.Errorf("validateAttachmentURL(%q) = nil, want rejection", tc.url)
+			}
+			if !tc.reject && err != nil {
+				t.Errorf("validateAttachmentURL(%q) = %v, want pass", tc.url, err)
+			}
+		})
+	}
+}
+
+// TestHTTPDownloaderRedirectCap pins the redirect policy against a local
+// server (loopback allowed as self-host): one hop passes, a four-hop chain
+// stops at the cap, and loopback without a matching host never dials.
+func TestHTTPDownloaderRedirectCap(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/file", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake-bytes"))
+	})
+	mux.HandleFunc("/ok1", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/file", http.StatusFound)
+	})
+	// Four-hop chain r1 -> r2 -> r3 -> r4 -> file, over the redirect cap.
+	for _, hop := range []struct{ from, to string }{
+		{"/r1", "/r2"}, {"/r2", "/r3"}, {"/r3", "/r4"}, {"/r4", "/file"},
+	} {
+		to := hop.to
+		mux.HandleFunc(hop.from, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, to, http.StatusFound)
+		})
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	downloader := NewHTTPDownloader(1 << 20)
+	ctx := context.Background()
+
+	data, mime, err := downloader.Download(ctx, srv.URL+"/ok1", srv.URL)
+	if err != nil {
+		t.Fatalf("single redirect Download: %v", err)
+	}
+	if string(data) != "fake-bytes" || mime != "image/jpeg" {
+		t.Errorf("Download = (%q, %q), want the file bytes with its mime", data, mime)
+	}
+
+	if _, _, err := downloader.Download(ctx, srv.URL+"/r1", srv.URL); err == nil {
+		t.Fatal("four-hop chain Download error = nil, want the redirect cap to stop it")
+	} else if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("four-hop chain error = %q, want it to name the redirect cap", err.Error())
+	}
+
+	if _, _, err := downloader.Download(ctx, srv.URL+"/file", "https://chatwoot.example.com"); err == nil {
+		t.Fatal("loopback without self-host match error = nil, want rejection before dialing")
+	}
+}
+
+// TestHandleAttachmentSSRFRejectedKeepsWebhook200 pins that an SSRF
+// rejection fails the attachment into a private note with a 200 answer: the
+// webhook never breaks, and the attendant text still goes out as fallback.
+func TestHandleAttachmentSSRFRejectedKeepsWebhook200(t *testing.T) {
+	fx := newFixture(t, enabledConnector(), globalOn())
+	fx.handler.downloader = NewHTTPDownloader(1 << 20)
+	fx.correls.latestErr = storage.ErrNotFound
+	payload := outgoingPayload(78, "look")
+	payload.Message.Attachments = []Attachment{
+		{ID: 1, FileType: "image", DataURL: "http://169.254.169.254/latest/meta-data", FileName: "meta.jpg"},
+	}
+
+	status, err := fx.handler.Handle(context.Background(), fx.instance, payload)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status = %d, want 200 (SSRF rejection never breaks the webhook)", status)
+	}
+	if len(fx.chats.creates) == 0 {
+		t.Fatal("private notes = 0, want the rejection note")
+	}
+	if !fx.chats.creates[0].private {
+		t.Error("rejection note is not private")
+	}
+	if len(fx.enqueuer.inputs) != 1 {
+		t.Fatalf("Enqueue calls = %d, want 1 text fallback", len(fx.enqueuer.inputs))
+	}
+	if got := fx.enqueuer.inputs[0]; got.Type != message.TypeText {
+		t.Errorf("Enqueue type = %q, want text fallback", got.Type)
 	}
 }
