@@ -180,6 +180,22 @@ func (r *InstanceRepository) SetConnectionState(ctx context.Context, id uuid.UUI
 	return nil
 }
 
+// BackfillOwner claims every legacy instance with a NULL owner for owner and
+// returns how many rows were claimed. Instances that already have an owner are
+// never touched: ownership is immutable.
+func (r *InstanceRepository) BackfillOwner(ctx context.Context, owner uuid.UUID) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE instances
+		SET owner_user_id = $1, updated_at = now()
+		WHERE owner_user_id IS NULL`,
+		owner,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("backfill instance owners: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Delete removes the instance and its dependent rows, or storage.ErrNotFound.
 func (r *InstanceRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM instances WHERE id = $1`, id)

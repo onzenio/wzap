@@ -122,6 +122,13 @@ func serve() error {
 
 	instances := postgres.NewInstanceRepository(pool)
 	users := postgres.NewUserRepository(pool)
+
+	// Seed the initial admin (and claim the legacy ownerless instances for
+	// him) before serving. Without WZAP_ADMIN_* this is a no-op.
+	if err := seedAdmin(ctx, cfg, users, instances, log); err != nil {
+		return err
+	}
+
 	messageRepo := postgres.NewMessageRepository(pool)
 	idempotencyRepo := postgres.NewIdempotencyRepository(pool)
 	outbox := postgres.NewEventOutboxRepository(pool)
