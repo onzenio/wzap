@@ -2,6 +2,7 @@ package whatsmeow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 
@@ -82,6 +83,7 @@ func inboundMessage(instanceID uuid.UUID, evt *events.Message, client *whatsmeow
 		Type:       evt.Info.Type,
 		Text:       messageText(evt.Message),
 		Timestamp:  evt.Info.Timestamp,
+		Raw:        captureRaw(evt),
 	}
 
 	mime, filename, length, downloadable := messageMedia(evt.Message)
@@ -112,7 +114,18 @@ func receiptEvent(instanceID uuid.UUID, evt *events.Receipt) session.Receipt {
 		SenderJID:  evt.Sender.String(),
 		Status:     string(evt.Type),
 		Timestamp:  evt.Timestamp,
+		Raw:        captureRaw(evt),
 	}
+}
+
+// captureRaw serializes the raw upstream event for webhook delivery. It is
+// best-effort: a marshal failure returns nil and never fails the event path.
+func captureRaw(evt any) json.RawMessage {
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // messageText extracts the text of a message, using the caption of media

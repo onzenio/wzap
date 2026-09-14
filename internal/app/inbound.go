@@ -12,6 +12,7 @@ import (
 	"wzap/internal/media"
 	"wzap/internal/model"
 	"wzap/internal/session"
+	"wzap/internal/webhook"
 )
 
 // messageEventType is the event type of the inbound message events.
@@ -59,6 +60,12 @@ func (r *Runtime) handleInbound(ctx context.Context, msg session.InboundMessage)
 	env, err := events.New(messageEventType, msg.InstanceID, payload)
 	if err != nil {
 		return fmt.Errorf("build message event: %w", err)
+	}
+	// The trimmed raw rides the envelope for NATS and webhook alike, so both
+	// consumers share the same bounded event. Connection and message.status
+	// envelopes carry no event: there is no meaningful raw upstream payload.
+	if trimmed, _ := webhook.CutRawForLimit(msg.Raw, r.maxMediaBytes); len(trimmed) > 0 {
+		env.Event = trimmed
 	}
 	if err := r.events.Write(ctx, events.Subjects.Message(msg.InstanceID), env); err != nil {
 		return fmt.Errorf("enqueue message event: %w", err)
