@@ -71,6 +71,7 @@ func TestCreateMessageWithAttachmentSendsMultipart(t *testing.T) {
 	var gotContentType, gotToken string
 	var gotFormContent, gotMessageType, gotSourceID string
 	var gotAttachmentNames []string
+	var gotAttachmentContentTypes []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotContentType = r.Header.Get("Content-Type")
 		gotToken = r.Header.Get("api_access_token")
@@ -84,6 +85,7 @@ func TestCreateMessageWithAttachmentSendsMultipart(t *testing.T) {
 			for _, files := range r.MultipartForm.File {
 				for _, fh := range files {
 					gotAttachmentNames = append(gotAttachmentNames, fh.Filename)
+					gotAttachmentContentTypes = append(gotAttachmentContentTypes, fh.Header.Get("Content-Type"))
 				}
 			}
 		}
@@ -116,5 +118,96 @@ func TestCreateMessageWithAttachmentSendsMultipart(t *testing.T) {
 	if len(gotAttachmentNames) == 0 {
 		t.Error("no attachment file part received")
 	}
+	if len(gotAttachmentContentTypes) == 0 || gotAttachmentContentTypes[0] != "image/jpeg" {
+		t.Errorf("attachment Content-Type = %v, want [image/jpeg]", gotAttachmentContentTypes)
+	}
 	_ = gotContentType
+}
+
+func TestCreateMessageWithAttachmentDefaultsContentTypeWhenEmpty(t *testing.T) {
+	var gotAttachmentContentTypes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+		}
+		if r.MultipartForm != nil && r.MultipartForm.File != nil {
+			for _, files := range r.MultipartForm.File {
+				for _, fh := range files {
+					gotAttachmentContentTypes = append(gotAttachmentContentTypes, fh.Header.Get("Content-Type"))
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 56})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-token", "1")
+	_, err := c.CreateMessageWithAttachment(context.Background(), 7, CreateMessageWithAttachmentRequest{
+		Content:  "photo",
+		FileName: "photo.jpg",
+		File:     []byte("fake-bytes"),
+	})
+	if err != nil {
+		t.Fatalf("CreateMessageWithAttachment = %v, want nil", err)
+	}
+	if len(gotAttachmentContentTypes) == 0 || gotAttachmentContentTypes[0] == "" {
+		t.Errorf("attachment Content-Type = %v, want sniffed/default type", gotAttachmentContentTypes)
+	}
+}
+
+func TestDeleteMessageReturnsResultTuple(t *testing.T) {
+	var gotMethod, gotPath, gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("api_access_token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-token", "1")
+	var result struct{}
+	result, err := c.DeleteMessage(context.Background(), 7, 99)
+	if err != nil {
+		t.Fatalf("DeleteMessage = %v, want nil", err)
+	}
+	_ = result
+	if gotMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", gotMethod)
+	}
+	if want := "/api/v1/accounts/1/conversations/7/messages/99"; gotPath != want {
+		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+	if gotToken != "test-token" {
+		t.Errorf("api_access_token = %q, want %q", gotToken, "test-token")
+	}
+}
+
+func TestUpdateLastSeenReturnsResultTuple(t *testing.T) {
+	var gotMethod, gotPath, gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("api_access_token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-token", "1")
+	var result struct{}
+	result, err := c.UpdateLastSeen(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("UpdateLastSeen = %v, want nil", err)
+	}
+	_ = result
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if want := "/api/v1/accounts/1/conversations/7/update_last_seen"; gotPath != want {
+		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+	if gotToken != "test-token" {
+		t.Errorf("api_access_token = %q, want %q", gotToken, "test-token")
+	}
 }

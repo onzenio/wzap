@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -270,7 +271,17 @@ func (c *Client) CreateMessageWithAttachment(ctx context.Context, conversationID
 		if name == "" {
 			name = "attachment"
 		}
-		part, err := writer.CreateFormFile("attachments[]", name)
+		contentType := req.ContentType
+		if contentType == "" {
+			contentType = http.DetectContentType(req.File)
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+		}
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeQuotes("attachments[]"), escapeQuotes(name)))
+		header.Set("Content-Type", contentType)
+		part, err := writer.CreatePart(header)
 		if err != nil {
 			return nil, fmt.Errorf("chatwoot: create form file: %w", err)
 		}
@@ -290,10 +301,13 @@ func (c *Client) CreateMessageWithAttachment(ctx context.Context, conversationID
 }
 
 // DeleteMessage deletes one message from a conversation.
-func (c *Client) DeleteMessage(ctx context.Context, conversationID, messageID int64) error {
+func (c *Client) DeleteMessage(ctx context.Context, conversationID, messageID int64) (struct{}, error) {
 	path := c.accountPath("/conversations/" + strconv.FormatInt(conversationID, 10) +
 		"/messages/" + strconv.FormatInt(messageID, 10))
-	return c.doJSON(ctx, http.MethodDelete, path, nil, nil, nil)
+	if err := c.doJSON(ctx, http.MethodDelete, path, nil, nil, nil); err != nil {
+		return struct{}{}, err
+	}
+	return struct{}{}, nil
 }
 
 // MergeContacts merges mergee into base, keeping base.
@@ -306,9 +320,12 @@ func (c *Client) MergeContacts(ctx context.Context, req MergeContactsRequest) (*
 }
 
 // UpdateLastSeen marks a conversation as seen.
-func (c *Client) UpdateLastSeen(ctx context.Context, conversationID int64) error {
+func (c *Client) UpdateLastSeen(ctx context.Context, conversationID int64) (struct{}, error) {
 	path := c.accountPath("/conversations/" + strconv.FormatInt(conversationID, 10) + "/update_last_seen")
-	return c.doJSON(ctx, http.MethodPost, path, nil, map[string]any{}, nil)
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, map[string]any{}, nil); err != nil {
+		return struct{}{}, err
+	}
+	return struct{}{}, nil
 }
 
 func truncate(s string, max int) string {
@@ -316,6 +333,12 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// escapeQuotes escapes backslashes and double quotes as mime/multipart does
+// for Content-Disposition filenames.
+func escapeQuotes(s string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(s)
 }
 
 func itoa(n int) string {
