@@ -17,6 +17,9 @@ var (
 	ErrNotFound = errors.New("record not found")
 	// ErrExternalRefTaken reports that an instance external_ref is already in use.
 	ErrExternalRefTaken = errors.New("external ref already taken")
+	// ErrEmailTaken reports that a user email is already in use
+	// (case-insensitive, matching the lower(email) unique index).
+	ErrEmailTaken = errors.New("email already taken")
 	// ErrInvalidCursor reports that a pagination cursor is not a valid identifier.
 	ErrInvalidCursor = errors.New("invalid cursor")
 	// ErrFingerprintMismatch reports that an idempotency key was reused with a
@@ -135,4 +138,34 @@ type EventOutboxRepository interface {
 	MarkAttempt(ctx context.Context, id uuid.UUID, errMsg string) error
 	// DeletePublishedBefore removes published events stamped before t.
 	DeletePublishedBefore(ctx context.Context, t time.Time) (int64, error)
+}
+
+// UserRepository persists manager users. GetByEmail matches case-insensitively
+// and Create reports ErrEmailTaken when the email is already in use.
+type UserRepository interface {
+	Create(ctx context.Context, user model.User) (*model.User, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+	GetByEmail(ctx context.Context, email string) (*model.User, error)
+	// List returns every user ordered by created_at.
+	List(ctx context.Context) ([]model.User, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+	Count(ctx context.Context) (int, error)
+}
+
+// APIKeyRepository manages the instance key hashes used to authenticate
+// instance-scoped requests. Hashes never leave the repository: callers pass
+// hashes in and get instance ids back.
+type APIKeyRepository interface {
+	// SetHash stores (or replaces) the key hash of an instance. It returns
+	// ErrNotFound when the instance does not exist.
+	SetHash(ctx context.Context, instanceID uuid.UUID, hash string) error
+	// InstanceByHash resolves the instance id holding hash or ErrNotFound.
+	InstanceByHash(ctx context.Context, hash string) (uuid.UUID, error)
+	// ClearHash revokes the instance key by NULLing its hash. It returns
+	// ErrNotFound when the instance does not exist.
+	ClearHash(ctx context.Context, instanceID uuid.UUID) error
+	// CountByOwner counts the instances owned by owner. CountAll counts every
+	// instance, any state; both feed the quota checks.
+	CountByOwner(ctx context.Context, owner uuid.UUID) (int, error)
+	CountAll(ctx context.Context) (int, error)
 }

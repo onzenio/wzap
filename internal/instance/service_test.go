@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -307,7 +308,7 @@ func TestServiceGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if *got != want {
+	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("Get = %+v, want %+v", *got, want)
 	}
 }
@@ -393,10 +394,10 @@ func TestServiceUpdatePartial(t *testing.T) {
 				t.Fatalf("Update: %v", err)
 			}
 			tt.want.ID = id
-			if *updated != tt.want {
+			if !reflect.DeepEqual(*updated, tt.want) {
 				t.Errorf("Update = %+v, want %+v", *updated, tt.want)
 			}
-			if len(repo.updateCalls) != 1 || repo.updateCalls[0] != tt.want {
+			if len(repo.updateCalls) != 1 || !reflect.DeepEqual(repo.updateCalls[0], tt.want) {
 				t.Errorf("repo Update calls = %+v, want %+v", repo.updateCalls, tt.want)
 			}
 		})

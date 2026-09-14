@@ -17,6 +17,7 @@ import (
 
 const instanceColumns = `id, name, COALESCE(external_ref, '') AS external_ref, status, ` +
 	`COALESCE(whatsapp_jid, '') AS whatsapp_jid, last_connected_at, COALESCE(last_error, '') AS last_error, ` +
+	`owner_user_id, webhook_url, webhook_enabled, webhook_events, ` +
 	`created_at, updated_at`
 
 const listInstancesQuery = `SELECT ` + instanceColumns + ` FROM instances ORDER BY created_at DESC, id DESC LIMIT $1`
@@ -207,6 +208,7 @@ func scanInstanceRow(scanner rowScanner, instance *model.Instance) error {
 	return scanner.Scan(
 		&instance.ID, &instance.Name, &instance.ExternalRef, &instance.Status,
 		&instance.WhatsAppJID, &instance.LastConnectedAt, &instance.LastError,
+		&instance.OwnerUserID, &instance.WebhookURL, &instance.WebhookEnabled, &instance.WebhookEvents,
 		&instance.CreatedAt, &instance.UpdatedAt,
 	)
 }
