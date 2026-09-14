@@ -30,6 +30,20 @@ type MediaStore interface {
 // content, not the JSON envelope used by the other endpoints. The media loads
 // first (missing or expired → 404) and the owning instance authorizes next
 // (403) under the instance-scoped rule.
+//
+// @Summary Download media
+// @Tags media
+// @Produce octet-stream
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or owning instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Media ID (UUID)"
+// @Success 200 {file} binary "Raw media bytes, outside the JSON envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Media not found or expired"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /media/{id} [get]
 func handleGetMedia(instances InstanceService, store MediaStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.Parse(r.PathValue("id"))

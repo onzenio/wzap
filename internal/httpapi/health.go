@@ -138,6 +138,14 @@ type detailedReadyChecker interface {
 }
 
 // handleHealthz reports liveness: the process is alive whenever it replies.
+//
+// @Summary Liveness probe
+// @Description Reports liveness without authentication. The process is alive whenever it replies.
+// @Tags health
+// @Produce json
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Success 200 {string} string "Enveloped {\"status\": \"ok\"}"
+// @Router /healthz [get]
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -145,6 +153,15 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // handleReadyz reports readiness from the configured checker: 200 while every
 // dependency is ready and 503 otherwise. The response names each dependency
 // but never echoes probe errors.
+//
+// @Summary Readiness probe
+// @Description Reports readiness without authentication: 200 while every dependency is ready, 503 otherwise. The response names each dependency but never echoes probe errors.
+// @Tags health
+// @Produce json
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Success 200 {object} readiness "Readiness, wrapped in the data envelope"
+// @Failure 503 {object} readiness "Unready state, wrapped in the data envelope"
+// @Router /readyz [get]
 func handleReadyz(checker ReadyChecker, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

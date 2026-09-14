@@ -37,6 +37,25 @@ type numberCheckResponse struct {
 // is false and jid empty when the number is malformed or absent from WhatsApp.
 // An instance without a usable session answers 503 so a caller can retry
 // instead of taking a negative answer that was never verified.
+//
+// @Summary Check a phone number
+// @Tags numbers
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Param request body numberCheckRequest true "Phone payload"
+// @Success 200 {object} numberCheckResponse "Resolution, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body or missing phone"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Failure 503 {object} errorEnvelope "Number resolution unavailable"
+// @Router /instances/{id}/numbers/check [post]
 func handleCheckNumber(instances InstanceService, numbers NumberResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)

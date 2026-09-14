@@ -96,6 +96,29 @@ type sendContactRequest struct {
 // handleSendText accepts a text message and answers 202 with its id. It loads
 // the target instance first (404) and authorizes (403) before reading the
 // body or enqueueing anything.
+//
+// @Summary Send a text message
+// @Tags messages
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param Idempotency-Key header string false "Idempotency key, 24h replay per instance"
+// @Param id path string true "Instance ID (UUID)"
+// @Param request body sendTextRequest true "Text payload"
+// @Header 202 {string} X-Idempotent-Replay "true when replayed from a previous call"
+// @Success 202 {object} messageAcceptedResponse "Accepted, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "Instance not connected, or key already in flight"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Invalid content, unknown number, or reused key"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Failure 503 {object} errorEnvelope "Number resolution unavailable"
+// @Router /instances/{id}/messages/text [post]
 func handleSendText(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -135,6 +158,29 @@ func handleSendText(instances InstanceService, messages MessageService) http.Han
 // handleSendLocation accepts a location message and answers 202 with its id.
 // It loads the target instance first (404) and authorizes (403) before
 // reading the body or enqueueing anything.
+//
+// @Summary Send a location message
+// @Tags messages
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param Idempotency-Key header string false "Idempotency key, 24h replay per instance"
+// @Param id path string true "Instance ID (UUID)"
+// @Param request body sendLocationRequest true "Location payload"
+// @Header 202 {string} X-Idempotent-Replay "true when replayed from a previous call"
+// @Success 202 {object} messageAcceptedResponse "Accepted, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "Instance not connected, or key already in flight"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Invalid content, unknown number, or reused key"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Failure 503 {object} errorEnvelope "Number resolution unavailable"
+// @Router /instances/{id}/messages/location [post]
 func handleSendLocation(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -179,6 +225,29 @@ func handleSendLocation(instances InstanceService, messages MessageService) http
 // handleSendContact accepts a contact message and answers 202 with its id. It
 // loads the target instance first (404) and authorizes (403) before reading
 // the body or enqueueing anything.
+//
+// @Summary Send a contact message
+// @Tags messages
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param Idempotency-Key header string false "Idempotency key, 24h replay per instance"
+// @Param id path string true "Instance ID (UUID)"
+// @Param request body sendContactRequest true "Contact payload"
+// @Header 202 {string} X-Idempotent-Replay "true when replayed from a previous call"
+// @Success 202 {object} messageAcceptedResponse "Accepted, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "Instance not connected, or key already in flight"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Invalid content, unknown number, or reused key"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Failure 503 {object} errorEnvelope "Number resolution unavailable"
+// @Router /instances/{id}/messages/contact [post]
 func handleSendContact(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -221,6 +290,33 @@ func handleSendContact(instances InstanceService, messages MessageService) http.
 // the outbound kinds and must match the uploaded content type; invalid content
 // answers 422 before the media is stored or the message enqueued. It loads the
 // target instance first (404) and authorizes (403) before reading the upload.
+//
+// @Summary Send a media message
+// @Tags messages
+// @Accept multipart/form-data
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param Idempotency-Key header string false "Idempotency key, 24h replay per instance"
+// @Param id path string true "Instance ID (UUID)"
+// @Param to formData string true "Recipient phone"
+// @Param type formData string true "Media kind: image, video, audio or document"
+// @Param caption formData string false "Caption"
+// @Param filename formData string false "Override filename"
+// @Param ptt formData string false "Push-to-talk flag for audio"
+// @Param file formData file true "Media file"
+// @Header 202 {string} X-Idempotent-Replay "true when replayed from a previous call"
+// @Success 202 {object} messageAcceptedResponse "Accepted, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Invalid multipart body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "Instance not connected, or key already in flight"
+// @Failure 422 {object} errorEnvelope "Invalid file, mismatched type, or reused key"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Failure 503 {object} errorEnvelope "Number resolution unavailable"
+// @Router /instances/{id}/messages/media [post]
 func handleSendMedia(instances InstanceService, messages MessageService, mediaStore MediaStore, maxBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -387,6 +483,21 @@ func writeMediaUploadError(w http.ResponseWriter, r *http.Request, err error) {
 // handleGetMessage answers 200 with one message of the instance. It loads the
 // target instance first (404) and authorizes (403) before looking the message
 // up.
+//
+// @Summary Get a message
+// @Tags messages
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Param message_id path string true "Message ID (UUID)"
+// @Success 200 {object} messageResponse "Message, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance or message not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id}/messages/{message_id} [get]
 func handleGetMessage(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -421,6 +532,23 @@ func handleGetMessage(instances InstanceService, messages MessageService) http.H
 
 // handleListMessages answers one page of messages with its next cursor. It
 // loads the target instance first (404) and authorizes (403) before listing.
+//
+// @Summary List messages
+// @Tags messages
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Param limit query int false "Page size, default 50, max 100"
+// @Param cursor query string false "Opaque pagination cursor"
+// @Success 200 {object} messageListResponse "One page, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Invalid cursor"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id}/messages [get]
 func handleListMessages(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)

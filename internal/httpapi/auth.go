@@ -33,6 +33,19 @@ type logoutResponse struct {
 // handleLogin verifies the credentials and answers 200 with the identity plus
 // the session cookie. An unknown email and a wrong password share one 401
 // response so neither field is revealed.
+//
+// @Summary Log in to the manager session
+// @Description Verifies the email/password credentials and mints the wzap_session cookie. Unknown email and wrong password share one 401 response.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param request body loginRequest true "Credentials"
+// @Success 200 {object} identityResponse "Identity, wrapped in the data envelope; the wzap_session cookie is set"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Invalid credentials"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /auth/login [post]
 func handleLogin(users storage.UserRepository, jwtSecret string, secure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request loginRequest
@@ -68,6 +81,14 @@ func handleLogin(users storage.UserRepository, jwtSecret string, secure bool) ht
 
 // handleLogout clears the session cookie and answers 200. There are no
 // server-side sessions, so revocation is the cleared cookie alone.
+//
+// @Summary Log out of the manager session
+// @Description Clears the wzap_session cookie. There are no server-side sessions.
+// @Tags auth
+// @Produce json
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Success 200 {object} logoutResponse "Status, wrapped in the data envelope"
+// @Router /auth/logout [post]
 func handleLogout(secure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		clearSessionCookie(w, secure)
@@ -77,6 +98,16 @@ func handleLogout(secure bool) http.HandlerFunc {
 
 // handleMe answers 200 with the identity of the session cookie holder, 401
 // without a valid session.
+//
+// @Summary Show the current manager session
+// @Description Answers the identity of the wzap_session cookie holder, 401 without a valid session.
+// @Tags auth
+// @Produce json
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Success 200 {object} identityResponse "Identity, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid session"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /auth/me [get]
 func handleMe(users storage.UserRepository, jwtSecret string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(auth.SessionCookieName)

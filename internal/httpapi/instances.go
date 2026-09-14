@@ -121,6 +121,24 @@ type updateInstanceRequest struct {
 // answers 403 quota_exceeded. The global scope and admin sessions bypass both
 // checks. The check-then-insert race is accepted at product scale (R19): two
 // concurrent creates may both pass and both insert; no locking is built.
+//
+// @Summary Create an instance
+// @Tags instances
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or user session credential scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param request body createInstanceRequest true "Instance payload"
+// @Success 201 {object} createInstanceResponse "Created, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Forbidden or quota exceeded"
+// @Failure 409 {object} errorEnvelope "External ref already taken"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Unknown owner or invalid webhook config"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances [post]
 func handleCreateInstance(instances InstanceService, users storage.UserRepository, keys storage.APIKeyRepository, maxInstances int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := authorizeCollection(r); err != nil {
@@ -266,6 +284,21 @@ func writeQuotaError(w http.ResponseWriter, r *http.Request, err error) {
 // handleListInstances answers one page of instances with its next cursor. An
 // instance key owns no collection view and answers 403; a user session sees
 // exactly its own rows while the global scope and admin sessions see all.
+//
+// @Summary List instances
+// @Tags instances
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or user session credential scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param limit query int false "Page size, default 50, max 100"
+// @Param cursor query string false "Opaque pagination cursor"
+// @Success 200 {object} instanceListResponse "One page, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Invalid cursor"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Instance keys own no collection view"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances [get]
 func handleListInstances(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := authorizeCollection(r); err != nil {
@@ -296,6 +329,20 @@ func handleListInstances(instances InstanceService) http.HandlerFunc {
 
 // handleGetInstance answers one instance by id. The target loads first so a
 // missing id answers 404 before the ownership check can deny with 403.
+//
+// @Summary Get an instance
+// @Tags instances
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Success 200 {object} instanceResponse "Instance, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id} [get]
 func handleGetInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -319,6 +366,26 @@ func handleGetInstance(instances InstanceService) http.HandlerFunc {
 // handleUpdateInstance applies a partial update and answers 200 with the stored
 // instance. It loads the target first (404) and authorizes (403) before
 // reading the body or writing anything.
+//
+// @Summary Update an instance
+// @Tags instances
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Param request body updateInstanceRequest true "Partial update payload"
+// @Success 200 {object} instanceResponse "Updated instance, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body or invalid cursor"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "External ref already taken"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Invalid webhook config"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id} [patch]
 func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -359,6 +426,20 @@ func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 
 // handleDeleteInstance removes an instance and answers 204. It loads the
 // target first (404) and authorizes (403) before removing anything.
+//
+// @Summary Delete an instance
+// @Tags instances
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Success 204 "Deleted, no body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id} [delete]
 func handleDeleteInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)

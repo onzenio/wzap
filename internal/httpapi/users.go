@@ -73,6 +73,24 @@ type createUserRequest struct {
 // missing quota applies defaultQuota (WZAP_DEFAULT_USER_INSTANCE_QUOTA); an
 // explicit value, including 0 (unlimited), is used verbatim. A duplicate
 // email answers 409.
+//
+// @Summary Create a user
+// @Tags users
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or admin session scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param request body createUserRequest true "User payload"
+// @Success 201 {object} userQuotaResponse "Created user, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Requires global or admin scope"
+// @Failure 409 {object} errorEnvelope "Email already taken"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Invalid email, password, role or quota"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /users [post]
 func handleCreateUser(users storage.UserRepository, defaultQuota int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := requireAdminScope(r); err != nil {
@@ -138,6 +156,18 @@ func handleCreateUser(users storage.UserRepository, defaultQuota int) http.Handl
 
 // handleListUsers answers every user in created_at order. Only the global
 // scope and admin sessions may list; any other scope answers 403.
+//
+// @Summary List users
+// @Tags users
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or admin session scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Success 200 {array} userQuotaResponse "Users, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Requires global or admin scope"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /users [get]
 func handleListUsers(users storage.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := requireAdminScope(r); err != nil {
@@ -166,6 +196,20 @@ func handleListUsers(users storage.UserRepository) http.HandlerFunc {
 // sessions may read; any other scope answers 403 before the target is read,
 // so non-admin callers cannot probe user ids. A malformed id and an unknown
 // user answer 404.
+//
+// @Summary Get a user
+// @Tags users
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or admin session scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "User ID (UUID)"
+// @Success 200 {object} userQuotaResponse "User, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Requires global or admin scope"
+// @Failure 404 {object} errorEnvelope "User not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /users/{id} [get]
 func handleGetUser(users storage.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := requireAdminScope(r); err != nil {
@@ -203,6 +247,21 @@ func handleGetUser(users storage.UserRepository) http.HandlerFunc {
 // layers: a deterministic CountByOwner pre-check before the delete, and a
 // foreign-key race cover mapping a 23503 violation from Delete to 409 as
 // well. There is no transfer and no cascade, by omission.
+//
+// @Summary Delete a user
+// @Tags users
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or admin session scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "User ID (UUID)"
+// @Success 204 "Deleted, no body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Requires global or admin scope"
+// @Failure 404 {object} errorEnvelope "User not found"
+// @Failure 409 {object} errorEnvelope "User still owns instances"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /users/{id} [delete]
 func handleDeleteUser(users storage.UserRepository, keys storage.APIKeyRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := requireAdminScope(r); err != nil {
@@ -266,6 +325,25 @@ type patchQuotaRequest struct {
 // cannot probe user ids. A malformed id and an unknown user answer 404; a
 // missing, non-integer or negative quota answers 422. Unknown JSON fields are
 // ignored, matching the shared body decoder.
+//
+// @Summary Update a user quota
+// @Tags users
+// @Accept json
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global key or admin session scope"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "User ID (UUID)"
+// @Param request body patchQuotaRequest true "Quota payload"
+// @Success 200 {object} userQuotaResponse "Updated user, wrapped in the data envelope"
+// @Failure 400 {object} errorEnvelope "Malformed body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Requires global or admin scope"
+// @Failure 404 {object} errorEnvelope "User not found"
+// @Failure 413 {object} errorEnvelope "Body exceeds the 1 MiB limit"
+// @Failure 422 {object} errorEnvelope "Invalid instance quota"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /users/{id} [patch]
 func handleUpdateUserQuota(users storage.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := requireAdminScope(r); err != nil {
