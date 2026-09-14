@@ -463,9 +463,10 @@ func newCreateInstanceResponse(inst *model.Instance, key string) createInstanceR
 }
 
 // writeInstanceError maps a service error to its HTTP status and error
-// envelope. Scope denials answer 403, unknown owner overrides answer 422, a
-// missing oldest admin answers 500 with a clear server-state message; unknown
-// failures answer 500 without leaking their cause.
+// envelope. Scope denials answer 403, unknown owner overrides and invalid
+// webhook configurations answer 422, a missing oldest admin answers 500 with
+// a clear server-state message; unknown failures answer 500 without leaking
+// their cause.
 func writeInstanceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, auth.ErrForbidden):
