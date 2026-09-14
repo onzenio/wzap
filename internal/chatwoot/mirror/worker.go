@@ -316,14 +316,17 @@ func (w *Worker) HandleMessage(ctx context.Context, instanceID, eventID uuid.UUI
 		log.Warn("chatwoot message creation failed", "error", err)
 		return err
 	}
-	if _, err := w.messages.Put(ctx, model.ChatwootMessage{
+	corr := model.ChatwootMessage{
 		InstanceID:        instanceID,
 		WAKey:             msg.MessageID,
 		ChatwootMessageID: mirrored.ID,
 		ConversationID:    conversationID,
 		InboxID:           rt.inbox,
 		ContactSourceID:   contactSource(msg),
-	}); err != nil {
+	}
+	// storeCorrelation reconciles the post-Create window so a Put failure
+	// never Naks into a visible duplicate on redelivery.
+	if err := w.storeCorrelation(ctx, log, rt.cli, corr); err != nil {
 		log.Warn("correlation store failed", "error", err)
 		return err
 	}
@@ -389,14 +392,17 @@ func (w *Worker) HandleEdit(ctx context.Context, instanceID, eventID uuid.UUID, 
 		log.Warn("chatwoot edit creation failed", "error", err)
 		return err
 	}
-	if _, err := w.messages.Put(ctx, model.ChatwootMessage{
+	corr := model.ChatwootMessage{
 		InstanceID:        instanceID,
 		WAKey:             editKey,
 		ChatwootMessageID: mirrored.ID,
 		ConversationID:    original.ConversationID,
 		InboxID:           rt.inbox,
 		ContactSourceID:   original.ContactSourceID,
-	}); err != nil {
+	}
+	// storeCorrelation reconciles the post-Create window so a Put failure
+	// never Naks into a visible duplicate on redelivery.
+	if err := w.storeCorrelation(ctx, log, rt.cli, corr); err != nil {
 		log.Warn("correlation store failed", "error", err)
 		return err
 	}
@@ -489,6 +495,12 @@ func (w *Worker) HandleRead(ctx context.Context, instanceID, eventID uuid.UUID, 
 // HandleConnection posts the connection transition to the operational
 // conversation in pt-BR. Identical consecutive notices within 30s are
 // throttled so a reconnect storm does not flood the operators.
+//
+// Operational notices dedupe by event_id in memory only (no PG correlation:
+// they carry no WAKey for edits/deletes and are idempotent status lines).
+// Memory-only is accepted for a single replica under at-least-once: a restart
+// may repost one status line, which is operator-visible noise, never user data
+// loss or a duplicate chat message.
 func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.UUID, notice ConnectionNotice) error {
 	log := w.log.With("instance_id", instanceID, "event_id", eventID, "status", notice.Status)
 	if !w.global.Enabled {
@@ -503,6 +515,10 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 	}
 	if w.throttled(instanceID, notice.Status) {
 		log.Debug("throttling repeated connection notice")
+		// Throttle suppresses sending, not dedup bookkeeping: the throttled
+		// event_id must still be marked seen, or its redelivery after the
+		// 30s window would post a duplicate notice.
+		w.markSeen(eventID)
 		return nil
 	}
 	rt, skip, err := w.runtimeFor(ctx, cfg)
@@ -901,6 +917,58 @@ func (w *Worker) stampNotice(instanceID uuid.UUID, status string) {
 	w.notices[instanceID] = noticeStamp{status: status, at: time.Now().UTC()}
 }
 
+// storeCorrelation records the WA→Chatwoot correlation after a successful
+// Create. It preserves exactly-once-visible on redelivery: Put is an upsert,
+// so a Put failure after Create would otherwise Nak and recreate a second
+// visible message on redelivery (the pre-create Get still misses).
+//
+// Reconcile policy (minimal, no Chatwoot-side source_id search in the pinned
+// client):
+//   - Get succeeds (row exists): another delivery won the race; our
+//     just-created message is an orphan duplicate unless it is the row itself
+//     (Put committed but the response was lost). Best-effort delete the orphan,
+//     then Ack.
+//   - Get reports NotFound: our message is visible but uncorrelated. Retry Put
+//     once for a transient blip; if it still fails, Ack with an orphan warn
+//     (edits/deletes for the key will skip) to avoid a visible duplicate.
+//   - Get fails otherwise (DB down): return the Put error for Nak. The
+//     redelivery pre-create Get fails before Create, so no duplicate is
+//     possible.
+//
+// Residual rare window (accepted): a producer double-publish of the same WAKey
+// with different event_ids after an orphan Ack (no row, seen is per event_id)
+// would Create again. It needs a lost correlation plus a duplicate envelope,
+// which the outbox relay (Nats-Msg-Id = event_id) already dedups; closing it
+// needs a Chatwoot-side source_id lookup the pinned client lacks.
+func (w *Worker) storeCorrelation(ctx context.Context, log *slog.Logger, cli ChatwootClient, msg model.ChatwootMessage) error {
+	if _, err := w.messages.Put(ctx, msg); err == nil {
+		return nil
+	} else {
+		putErr := err
+		existing, gerr := w.messages.GetByWAKey(ctx, msg.InstanceID, msg.WAKey)
+		if gerr == nil {
+			if existing.ChatwootMessageID != msg.ChatwootMessageID {
+				if _, derr := cli.DeleteMessage(ctx, msg.ConversationID, msg.ChatwootMessageID); derr != nil {
+					log.Warn("duplicate orphan cleanup failed, keeping single retry guard", "error", derr)
+				} else {
+					log.Warn("duplicate orphan removed after correlation race")
+				}
+			}
+			return nil
+		}
+		if !errors.Is(gerr, storage.ErrNotFound) {
+			return putErr
+		}
+		if _, err := w.messages.Put(ctx, msg); err == nil {
+			return nil
+		} else {
+			putErr = err
+		}
+		log.Warn("correlation store failed, keeping visible message without correlation", "error", putErr)
+		return nil
+	}
+}
+
 // sameConnector reports whether the cached stack still matches cfg.
 func sameConnector(a, b model.ChatwootConfig) bool {
 	return a.URL == b.URL && a.AccountID == b.AccountID && a.Token == b.Token &&
@@ -922,8 +990,18 @@ func ignoredJID(cfg *model.ChatwootConfig, from, chat string) bool {
 }
 
 // isStatusTraffic reports status-like traffic that never mirrors: broadcast
-// statuses and channel newsletters. (Contact-search probes emit no message
-// events, so there is nothing to filter for them.)
+// statuses and channel newsletters.
+//
+// Searches need no JID filter here: contact-search probes emit no message
+// events in this pipeline. The session dispatch
+// (internal/session/whatsmeow/events.go dispatch) only translates Message,
+// Receipt, HistorySync and connection events into sink calls; the contact
+// resolver searches (internal/chatwoot/contacts/contacts.go FindContactByPhone,
+// SearchContacts) are outbound Chatwoot HTTP that never enqueue a message
+// event, and the app sink (internal/app/inbound.go handleInbound) only enqueues
+// from OnMessage. A search-like message that somehow arrived (e.g. a poll with
+// empty text and no media) still never mirrors: it hits the unmappable-type
+// skip in HandleMessage (warn+skip, no worker failure).
 func isStatusTraffic(from, chat string) bool {
 	for _, jid := range []string{from, chat} {
 		if strings.HasSuffix(jid, "@broadcast") || strings.HasSuffix(jid, "@newsletter") {

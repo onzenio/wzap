@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
 	"wzap/internal/app"
@@ -161,23 +162,41 @@ func serve() error {
 	var mirrorWorker *mirror.Worker
 	if cfg.Chatwoot.Enabled {
 		chatwootConfigs, chatwootMessages := postgres.NewChatwootRepositories(pool)
+		clientFor := func(connector model.ChatwootConfig) mirror.ChatwootClient {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		}
+		// Boot-fail-closed: the worker abstracts the client behind an
+		// interface, but the resolvers need the concrete client. Validate the
+		// wiring once so a programming mistake fails boot with a clear error
+		// instead of panicking on the first event.
+		if _, ok := clientFor(model.ChatwootConfig{}).(*client.Client); !ok {
+			return fmt.Errorf("chatwoot mirror miswired: ClientFor must return *client.Client")
+		}
+		contactsFor := func(cli mirror.ChatwootClient, connector model.ChatwootConfig) mirror.ContactResolver {
+			concrete, ok := cli.(*client.Client)
+			if !ok {
+				return miswiredContactResolver{err: fmt.Errorf("chatwoot mirror miswired: contacts need *client.Client, got %T", cli)}
+			}
+			return contacts.New(concrete, connector, log)
+		}
+		conversationsFor := func(cli mirror.ChatwootClient, connector model.ChatwootConfig, inboxID int64) mirror.ConversationResolver {
+			concrete, ok := cli.(*client.Client)
+			if !ok {
+				return miswiredConversationResolver{err: fmt.Errorf("chatwoot mirror miswired: conversations need *client.Client, got %T", cli)}
+			}
+			return conversations.New(concrete, connector, inboxID, log)
+		}
 		mirrorWorker = mirror.New(mirror.Deps{
-			Conn:     nc,
-			Stream:   cfg.NATSStream,
-			Configs:  chatwootConfigs,
-			Messages: chatwootMessages,
-			Media:    mediaStorage,
-			Global:   cfg.Chatwoot,
-			ClientFor: func(connector model.ChatwootConfig) mirror.ChatwootClient {
-				return client.New(connector.URL, connector.Token, connector.AccountID)
-			},
-			ContactsFor: func(cli mirror.ChatwootClient, connector model.ChatwootConfig) mirror.ContactResolver {
-				return contacts.New(cli.(*client.Client), connector, log)
-			},
-			ConversationsFor: func(cli mirror.ChatwootClient, connector model.ChatwootConfig, inboxID int64) mirror.ConversationResolver {
-				return conversations.New(cli.(*client.Client), connector, inboxID, log)
-			},
-			Log: log,
+			Conn:             nc,
+			Stream:           cfg.NATSStream,
+			Configs:          chatwootConfigs,
+			Messages:         chatwootMessages,
+			Media:            mediaStorage,
+			Global:           cfg.Chatwoot,
+			ClientFor:        clientFor,
+			ContactsFor:      contactsFor,
+			ConversationsFor: conversationsFor,
+			Log:              log,
 		})
 	}
 	runtime := app.NewRuntime(
@@ -324,6 +343,24 @@ type shutdownComponent struct {
 	name string
 	stop context.CancelFunc
 	done <-chan struct{}
+}
+
+// miswiredContactResolver fails every resolution with the wiring error so a
+// factory type mistake never panics; the boot check in serve should already
+// have failed closed before the worker starts.
+type miswiredContactResolver struct{ err error }
+
+func (r miswiredContactResolver) Resolve(context.Context, string, bool, string, string, string) (*contacts.Contact, error) {
+	return nil, r.err
+}
+
+// miswiredConversationResolver fails every resolution with the wiring error so
+// a factory type mistake never panics; the boot check in serve should already
+// have failed closed before the worker starts.
+type miswiredConversationResolver struct{ err error }
+
+func (r miswiredConversationResolver) Resolve(context.Context, uuid.UUID, string, int64) (int64, error) {
+	return 0, r.err
 }
 
 // stopComponents stops the workers in order, waiting for each one within ctx so

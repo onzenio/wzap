@@ -172,6 +172,11 @@ func (f *fakeConfigs) Delete(_ context.Context, _ uuid.UUID) error { return nil 
 type fakeMessages struct {
 	mu   sync.Mutex
 	rows map[string]model.ChatwootMessage
+	// failPuts makes the next failPuts Put calls fail with putErr (or a
+	// generic error when putErr is nil), to simulate a post-Create store
+	// outage in the duplicate-window tests.
+	failPuts int
+	putErr   error
 }
 
 func newFakeMessages() *fakeMessages { return &fakeMessages{rows: map[string]model.ChatwootMessage{}} }
@@ -183,6 +188,14 @@ func (f *fakeMessages) key(instanceID uuid.UUID, waKey string) string {
 func (f *fakeMessages) Put(_ context.Context, msg model.ChatwootMessage) (*model.ChatwootMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failPuts > 0 {
+		f.failPuts--
+		err := f.putErr
+		if err == nil {
+			err = errors.New("fake correlation store down")
+		}
+		return nil, err
+	}
 	f.rows[f.key(msg.InstanceID, msg.WAKey)] = msg
 	stored := msg
 	return &stored, nil
@@ -751,6 +764,158 @@ func TestMirrorConsumerRedeliveryIsIdempotent(t *testing.T) {
 
 	if n := len(fx.cli.creates()); n != 1 {
 		t.Errorf("CreateMessage calls = %d, want 1 (durable redelivery deduped)", n)
+	}
+}
+
+// TestHandleMessagePutFailureKeepsSingleVisibleMessage pins the post-Create
+// reconcile: when the correlation Put fails after a successful Chatwoot
+// Create, the worker Acks (no error) instead of Naking into a visible
+// duplicate, and the broker redelivery of the same event_id mirrors nothing.
+func TestHandleMessagePutFailureKeepsSingleVisibleMessage(t *testing.T) {
+	fx := newFixture(nil)
+	fx.msgs.failPuts = 10
+	fx.msgs.putErr = errors.New("postgres down")
+	ctx := context.Background()
+	instanceID := uuid.New()
+	eventID := uuid.New()
+	msg := testMessagePayload()
+
+	if err := fx.worker.HandleMessage(ctx, instanceID, eventID, msg); err != nil {
+		t.Fatalf("Put failure must Ack to avoid a duplicate, got error: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (single visible message)", n)
+	}
+	// Same broker redelivery (same event_id) must not create again.
+	if err := fx.worker.HandleMessage(ctx, instanceID, eventID, msg); err != nil {
+		t.Fatalf("redelivery: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 1 {
+		t.Errorf("CreateMessage calls after redelivery = %d, want 1 (no visible duplicate)", n)
+	}
+}
+
+// TestHandleMessagePutTransientFailureRecovers pins the retry inside the
+// reconcile: a single Put blip succeeds on retry, so the correlation is
+// present and the redelivery dedupes via the table.
+func TestHandleMessagePutTransientFailureRecovers(t *testing.T) {
+	fx := newFixture(nil)
+	fx.msgs.failPuts = 1
+	ctx := context.Background()
+	instanceID := uuid.New()
+	eventID := uuid.New()
+	msg := testMessagePayload()
+
+	if err := fx.worker.HandleMessage(ctx, instanceID, eventID, msg); err != nil {
+		t.Fatalf("transient Put failure: %v", err)
+	}
+	if _, err := fx.msgs.GetByWAKey(ctx, instanceID, "WA-MSG-1"); err != nil {
+		t.Fatalf("correlation missing after retry: %v", err)
+	}
+	if err := fx.worker.HandleMessage(ctx, instanceID, uuid.New(), msg); err != nil {
+		t.Fatalf("redelivery: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 1 {
+		t.Errorf("CreateMessage calls = %d, want 1 (retry + PG dedup)", n)
+	}
+}
+
+// TestHandleEditPutFailureKeepsSingleVisibleMessage pins the same reconcile
+// for edits: Put failure after Create Acks, redelivery creates nothing.
+func TestHandleEditPutFailureKeepsSingleVisibleMessage(t *testing.T) {
+	fx := newFixture(nil)
+	ctx := context.Background()
+	instanceID := uuid.New()
+
+	if err := fx.worker.HandleMessage(ctx, instanceID, uuid.New(), testMessagePayload()); err != nil {
+		t.Fatalf("original: %v", err)
+	}
+	fx.msgs.failPuts = 10
+	edit := EditPayload{
+		FromJID:   "5511999999999@s.whatsapp.net",
+		ChatJID:   "5511999999999@s.whatsapp.net",
+		MessageID: "WA-MSG-1",
+		Text:      "editada com loja fechada",
+		Timestamp: time.Now().UTC(),
+	}
+	eventID := uuid.New()
+	if err := fx.worker.HandleEdit(ctx, instanceID, eventID, edit); err != nil {
+		t.Fatalf("edit Put failure must Ack, got error: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 2 {
+		t.Fatalf("CreateMessage calls = %d, want 2 (original + single edit)", n)
+	}
+	if err := fx.worker.HandleEdit(ctx, instanceID, eventID, edit); err != nil {
+		t.Fatalf("edit redelivery: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 2 {
+		t.Errorf("CreateMessage calls after redelivery = %d, want 2 (no duplicate edit)", n)
+	}
+}
+
+// TestHandleConnectionThrottledRedeliveryDoesNotDuplicate pins that throttle
+// suppresses sending, not dedup bookkeeping: a throttled event_id redelivered
+// after the 30s window still posts nothing (alreadySeen), while a fresh
+// event_id after the window posts again.
+func TestHandleConnectionThrottledRedeliveryDoesNotDuplicate(t *testing.T) {
+	fx := newFixture(nil)
+	ctx := context.Background()
+	instanceID := uuid.New()
+	notice := ConnectionNotice{Status: "connected", WhatsAppJID: "5511999999999@s.whatsapp.net"}
+
+	if err := fx.worker.HandleConnection(ctx, instanceID, uuid.New(), notice); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	throttledEvent := uuid.New()
+	if err := fx.worker.HandleConnection(ctx, instanceID, throttledEvent, notice); err != nil {
+		t.Fatalf("throttled: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 1 {
+		t.Fatalf("CreateMessage calls = %d, want 1 (second throttled)", n)
+	}
+	// Let the 30s throttle window expire: the same throttled event_id must
+	// still dedupe via seen, not post a duplicate notice.
+	fx.worker.mu.Lock()
+	if stamp, ok := fx.worker.notices[instanceID]; ok {
+		stamp.at = stamp.at.Add(-31 * time.Second)
+		fx.worker.notices[instanceID] = stamp
+	}
+	fx.worker.mu.Unlock()
+	if err := fx.worker.HandleConnection(ctx, instanceID, throttledEvent, notice); err != nil {
+		t.Fatalf("throttled redelivery after window: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 1 {
+		t.Errorf("CreateMessage calls after throttled redelivery = %d, want 1 (no duplicate notice)", n)
+	}
+	// A fresh event_id after the window is a new notice and posts again.
+	if err := fx.worker.HandleConnection(ctx, instanceID, uuid.New(), notice); err != nil {
+		t.Fatalf("fresh notice after window: %v", err)
+	}
+	if n := len(fx.cli.creates()); n != 2 {
+		t.Errorf("CreateMessage calls after fresh notice = %d, want 2 (window expired)", n)
+	}
+}
+
+// TestHandleMessageSkipsSearchLikePayload pins the searches spec gap: a
+// search-like message (poll/search type with empty text and no media) never
+// mirrors — it hits the unmappable-type skip. Contact-search probes
+// (contacts.go FindContactByPhone/SearchContacts) are outbound Chatwoot HTTP
+// that never enqueue a message event (see isStatusTraffic).
+func TestHandleMessageSkipsSearchLikePayload(t *testing.T) {
+	fx := newFixture(nil)
+	ctx := context.Background()
+
+	for _, msgType := range []string{"poll", "search"} {
+		msg := testMessagePayload()
+		msg.Type = msgType
+		msg.Text = ""
+		msg.Media = nil
+		if err := fx.worker.HandleMessage(ctx, uuid.New(), uuid.New(), msg); err != nil {
+			t.Fatalf("type %q must skip without error: %v", msgType, err)
+		}
+	}
+	if n := len(fx.cli.creates()); n != 0 {
+		t.Errorf("CreateMessage calls = %d, want 0 (search-like payloads ignored)", n)
 	}
 }
 
