@@ -239,6 +239,44 @@ func TestUserRepositoryDeleteOwnerWithInstances(t *testing.T) {
 	}
 }
 
+func TestUserRepositoryUpdateQuota(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	_ = pool
+	repo := NewUserRepository(pool)
+
+	user := createTestUser(t, repo, "quota@example.com", "user", 5)
+
+	if err := repo.UpdateQuota(ctx, user.ID, 1); err != nil {
+		t.Fatalf("UpdateQuota: %v", err)
+	}
+	got, err := repo.GetByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetByID after UpdateQuota: %v", err)
+	}
+	if got.InstanceQuota != 1 {
+		t.Errorf("InstanceQuota after UpdateQuota = %d, want 1", got.InstanceQuota)
+	}
+	if got.Email != "quota@example.com" || got.Role != "user" {
+		t.Errorf("UpdateQuota rewrote other columns: %+v", got)
+	}
+
+	if err := repo.UpdateQuota(ctx, user.ID, 0); err != nil {
+		t.Fatalf("UpdateQuota to 0: %v", err)
+	}
+	got, err = repo.GetByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetByID after UpdateQuota to 0: %v", err)
+	}
+	if got.InstanceQuota != 0 {
+		t.Errorf("InstanceQuota after UpdateQuota to 0 = %d, want 0", got.InstanceQuota)
+	}
+
+	if err := repo.UpdateQuota(ctx, uuid.New(), 1); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("UpdateQuota(unknown) error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestUserRepositoryCount(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
