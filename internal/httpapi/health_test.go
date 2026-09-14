@@ -39,7 +39,7 @@ func (d detailedChecker) Checks(context.Context) map[string]error { return d.res
 
 func readyServer(t *testing.T, checker ReadyChecker) *http.Server {
 	t.Helper()
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{ReadyChecker: checker})
 }
 
@@ -213,7 +213,7 @@ func TestCheckerReportsMigrationState(t *testing.T) {
 func TestReadyzLogsFailureWithRequestID(t *testing.T) {
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
-	srv := New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, log,
+	srv := New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, log,
 		Deps{ReadyChecker: checkFunc(func(context.Context) error { return errors.New("dependency down") })})
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)

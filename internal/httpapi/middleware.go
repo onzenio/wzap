@@ -2,14 +2,19 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"wzap/internal/auth"
+	"wzap/internal/storage"
 )
 
 const requestIDHeader = "X-Request-Id"
@@ -98,27 +103,54 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// Auth guards handlers with the service token compared in constant time.
-func Auth(token string) func(http.Handler) http.Handler {
+// Authenticate guards handlers with one credential per request, resolved in a
+// fixed order with first hit winning: the wzap_session cookie validated with
+// auth.ParseToken, the apikey header equal to the global key, then the hex
+// sha256 of the apikey header looked up in the key repository. An unusable
+// cookie (absent, unparseable, expired, wrong secret) counts as absent and
+// falls through to the apikey steps; only when no step resolves does the
+// middleware fail with 401. The legacy Authorization: Bearer scheme is never
+// read. The resolved auth.Scope is injected in the request context for
+// downstream handlers via auth.ContextWithScope.
+func Authenticate(globalKey string, users storage.UserRepository, keys storage.APIKeyRepository, jwtSecret string) func(http.Handler) http.Handler {
+	// Session validity is JWT-only: an unusable cookie falls through per R12
+	// and user-to-instance ownership stays in the handlers (2.4), so the
+	// users repository is intentionally unused here.
+	_ = users
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !validBearer(r.Header.Get("Authorization"), token) {
-				w.Header().Set("WWW-Authenticate", "Bearer")
-				Error(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid service token")
-				return
+			if cookie, err := r.Cookie(auth.SessionCookieName); err == nil {
+				if scope, err := auth.ParseToken(cookie.Value, jwtSecret); err == nil {
+					next.ServeHTTP(w, r.WithContext(auth.ContextWithScope(r.Context(), scope)))
+					return
+				}
 			}
-			next.ServeHTTP(w, r)
+
+			if presented := r.Header.Get("apikey"); presented != "" {
+				if globalKey != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(globalKey)) == 1 {
+					next.ServeHTTP(w, r.WithContext(auth.ContextWithScope(r.Context(), auth.Scope{Kind: auth.ScopeGlobal})))
+					return
+				}
+				if keys != nil {
+					sum := sha256.Sum256([]byte(presented))
+					id, err := keys.InstanceByHash(r.Context(), hex.EncodeToString(sum[:]))
+					switch {
+					case err == nil:
+						next.ServeHTTP(w, r.WithContext(auth.ContextWithScope(r.Context(), auth.Scope{
+							Kind:       auth.ScopeInstance,
+							InstanceID: id,
+						})))
+						return
+					case errors.Is(err, storage.ErrNotFound):
+						// Unknown key: fall through to the shared 401 below.
+					default:
+						Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+						return
+					}
+				}
+			}
+
+			Error(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid credential")
 		})
 	}
-}
-
-func validBearer(header, token string) bool {
-	if token == "" {
-		return false
-	}
-	scheme, credentials, ok := strings.Cut(header, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(credentials), []byte(token)) == 1
 }

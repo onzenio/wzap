@@ -2,3 +2,7 @@ bin/
 .git
 *.md
 !THIRD_PARTY_NOTICES.md
+manager/node_modules
+manager/.output
+manager/.nuxt
+manager/.data

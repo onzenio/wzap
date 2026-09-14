@@ -13,7 +13,7 @@ import (
 
 func newTestServer(t *testing.T) *http.Server {
 	t.Helper()
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    &fakeInstanceService{},
@@ -24,7 +24,7 @@ func serve(t *testing.T, srv *http.Server, method, path, token string) *httptest
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("apikey", token)
 	}
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
@@ -78,7 +78,7 @@ func TestNewAPIGroupRequiresAuth(t *testing.T) {
 	srv := newTestServer(t)
 
 	t.Run("missing token", func(t *testing.T) {
-		rec := serve(t, srv, http.MethodGet, "/api/v1/instances", "")
+		rec := serve(t, srv, http.MethodGet, "/instances", "")
 
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -89,7 +89,7 @@ func TestNewAPIGroupRequiresAuth(t *testing.T) {
 	})
 
 	t.Run("valid token reaches instance handlers", func(t *testing.T) {
-		rec := serve(t, srv, http.MethodGet, "/api/v1/instances", testToken)
+		rec := serve(t, srv, http.MethodGet, "/instances", testToken)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -97,11 +97,28 @@ func TestNewAPIGroupRequiresAuth(t *testing.T) {
 	})
 }
 
+func TestLegacyAPIPrefixAnswersNotFound(t *testing.T) {
+	srv := newTestServer(t)
+
+	for name, token := range map[string]string{"with credential": testToken, "without credential": ""} {
+		t.Run(name, func(t *testing.T) {
+			rec := serve(t, srv, http.MethodGet, "/api/v1/instances", token)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+			}
+			if code := errorCode(t, rec.Body.Bytes()); code != "not_found" {
+				t.Errorf("error code = %q, want %q", code, "not_found")
+			}
+		})
+	}
+}
+
 func TestAPIFallbackAnswersErrorEnvelope(t *testing.T) {
 	srv := newTestServer(t)
 
 	t.Run("unknown path", func(t *testing.T) {
-		rec := serve(t, srv, http.MethodGet, "/api/v1/unknown", testToken)
+		rec := serve(t, srv, http.MethodGet, "/unknown", testToken)
 
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -115,7 +132,7 @@ func TestAPIFallbackAnswersErrorEnvelope(t *testing.T) {
 	})
 
 	t.Run("unknown path without token is unauthorized", func(t *testing.T) {
-		rec := serve(t, srv, http.MethodGet, "/api/v1/unknown", "")
+		rec := serve(t, srv, http.MethodGet, "/unknown", "")
 
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -123,7 +140,7 @@ func TestAPIFallbackAnswersErrorEnvelope(t *testing.T) {
 	})
 
 	t.Run("wrong method on a known path", func(t *testing.T) {
-		rec := serve(t, srv, http.MethodDelete, "/api/v1/instances", testToken)
+		rec := serve(t, srv, http.MethodDelete, "/instances", testToken)
 
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
@@ -138,7 +155,7 @@ func TestAPIFallbackAnswersErrorEnvelope(t *testing.T) {
 }
 
 func TestNewReturnsConfiguredServer(t *testing.T) {
-	srv := New(config.Config{HTTPAddr: "127.0.0.1:9999", ServiceToken: testToken}, discardLogger(), Deps{})
+	srv := New(config.Config{HTTPAddr: "127.0.0.1:9999", APIKey: testToken}, discardLogger(), Deps{})
 
 	if srv.Addr != "127.0.0.1:9999" {
 		t.Errorf("Addr = %q, want %q", srv.Addr, "127.0.0.1:9999")
@@ -165,7 +182,7 @@ func TestJSONNoContentHasNoBody(t *testing.T) {
 }
 
 func TestErrorEnvelope(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
+	req := httptest.NewRequest(http.MethodGet, "/instances", nil)
 	rec := httptest.NewRecorder()
 
 	Error(rec, req, http.StatusConflict, "conflict", "external ref already taken")
@@ -189,7 +206,7 @@ func TestErrorEnvelope(t *testing.T) {
 }
 
 func TestErrorEchoesRequestIDFromContext(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
+	req := httptest.NewRequest(http.MethodGet, "/instances", nil)
 	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "ctx-id-7"))
 	rec := httptest.NewRecorder()
 

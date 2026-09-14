@@ -21,6 +21,12 @@ type Envelope struct {
 	InstanceID   uuid.UUID       `json:"instance_id"`
 	OccurredAt   time.Time       `json:"occurred_at"`
 	Payload      json.RawMessage `json:"payload"`
+	// Event carries the raw upstream event (e.g. the serialized whatsmeow
+	// payload) for webhook delivery. It is additive to the NATS contract:
+	// omitempty keeps it off the wire when nil, so existing broker
+	// serialization is unchanged. Only message/receipt envelopes set it;
+	// connection-type envelopes carry no event.
+	Event json.RawMessage `json:"event,omitempty"`
 }
 
 // New builds an envelope of the given event type and instance, serializing the

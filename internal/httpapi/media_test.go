@@ -71,14 +71,17 @@ func (f *fakeMediaStore) Save(
 }
 
 // mediaServer builds the server under test with the given media store.
+// Instances default to a fake answering every id so global-scope tests
+// exercise the download behind the ownership gate.
 func mediaServer(t *testing.T, store MediaStore) *http.Server {
 	t.Helper()
 	if store == nil {
 		store = &fakeMediaStore{}
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
+			Instances:    &fakeInstanceService{},
 			Media:        store,
 		})
 }
@@ -98,7 +101,7 @@ func TestGetMediaReturnsContent(t *testing.T) {
 		}, nil
 	}}
 
-	rec := serve(t, mediaServer(t, store), http.MethodGet, "/api/v1/media/"+id.String(), testToken)
+	rec := serve(t, mediaServer(t, store), http.MethodGet, "/media/"+id.String(), testToken)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -148,7 +151,7 @@ func TestGetMediaSanitizesSenderFilename(t *testing.T) {
 				}, nil
 			}}
 
-			rec := serve(t, mediaServer(t, store), http.MethodGet, "/api/v1/media/"+id.String(), testToken)
+			rec := serve(t, mediaServer(t, store), http.MethodGet, "/media/"+id.String(), testToken)
 
 			disposition := rec.Header().Get("Content-Disposition")
 			if !strings.HasPrefix(disposition, "attachment") {
@@ -175,7 +178,7 @@ func TestGetMediaFilenameFallsBackToID(t *testing.T) {
 		}, nil
 	}}
 
-	rec := serve(t, mediaServer(t, store), http.MethodGet, "/api/v1/media/"+id.String(), testToken)
+	rec := serve(t, mediaServer(t, store), http.MethodGet, "/media/"+id.String(), testToken)
 
 	want := "attachment; filename=" + id.String()
 	if got := rec.Header().Get("Content-Disposition"); got != want {
@@ -184,7 +187,7 @@ func TestGetMediaFilenameFallsBackToID(t *testing.T) {
 }
 
 func TestGetMediaRequiresAuth(t *testing.T) {
-	rec := serve(t, mediaServer(t, nil), http.MethodGet, "/api/v1/media/"+uuid.NewString(), "")
+	rec := serve(t, mediaServer(t, nil), http.MethodGet, "/media/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -209,7 +212,7 @@ func TestGetMediaNotFound(t *testing.T) {
 				return nil, nil, tt.err
 			}}
 
-			rec := serve(t, mediaServer(t, store), http.MethodGet, "/api/v1/media/"+uuid.NewString(), testToken)
+			rec := serve(t, mediaServer(t, store), http.MethodGet, "/media/"+uuid.NewString(), testToken)
 
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -222,7 +225,7 @@ func TestGetMediaNotFound(t *testing.T) {
 }
 
 func TestGetMediaMalformedID(t *testing.T) {
-	rec := serve(t, mediaServer(t, nil), http.MethodGet, "/api/v1/media/not-a-uuid", testToken)
+	rec := serve(t, mediaServer(t, nil), http.MethodGet, "/media/not-a-uuid", testToken)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -234,7 +237,7 @@ func TestGetMediaInternalError(t *testing.T) {
 		return nil, nil, errors.New("database down")
 	}}
 
-	rec := serve(t, mediaServer(t, store), http.MethodGet, "/api/v1/media/"+uuid.NewString(), testToken)
+	rec := serve(t, mediaServer(t, store), http.MethodGet, "/media/"+uuid.NewString(), testToken)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)

@@ -17,8 +17,30 @@ type Instance struct {
 	WhatsAppJID     string
 	LastError       string
 	LastConnectedAt *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// OwnerUserID is the manager user owning the instance. It stays nil for
+	// legacy rows created before the product migration backfilled owners.
+	OwnerUserID *uuid.UUID
+	// WebhookURL is the per-instance webhook endpoint. Nil means unconfigured.
+	WebhookURL *string
+	// WebhookEnabled toggles delivery to WebhookURL. WebhookEvents lists the
+	// subscribed event types. The instance key hash is never exposed here;
+	// it stays inside the API key repository methods.
+	WebhookEnabled bool
+	WebhookEvents  []string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// User is a manager account. PasswordHash is a repo-level credential detail and
+// must never be logged or exposed beyond the storage boundary.
+type User struct {
+	ID            uuid.UUID
+	Email         string
+	PasswordHash  string
+	Role          string
+	InstanceQuota int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // OutboundMessage is a message queued for delivery through an instance.

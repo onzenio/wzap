@@ -25,11 +25,37 @@ type statusResponse struct {
 
 // handleConnectInstance starts pairing and answers 200 with the QR code and its
 // validity, or with the status and no QR when the instance is already
-// connected.
+// connected. It loads the target first (404) and authorizes (403) before
+// touching the session.
+//
+// @Summary Connect an instance
+// @Tags connection
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Success 200 {object} connectResponse "Pairing result, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "Instance already connected"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id}/connect [post]
 func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -43,11 +69,37 @@ func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 }
 
 // handleQRInstance answers 200 with the current pairing QR of an instance, or
-// 409 when its session is already connected.
+// 409 when its session is already connected. It loads the target first (404)
+// and authorizes (403) before touching the session.
+//
+// @Summary Get the pairing QR
+// @Tags connection
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Success 200 {object} connectResponse "Current QR, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 409 {object} errorEnvelope "Instance already connected"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id}/qr [get]
 func handleQRInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -61,6 +113,20 @@ func handleQRInstance(instances InstanceService) http.HandlerFunc {
 }
 
 // handleInstanceStatus answers 200 with the connection status of an instance.
+//
+// @Summary Get connection status
+// @Tags connection
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Success 200 {object} statusResponse "Connection status, wrapped in the data envelope"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id}/status [get]
 func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -73,6 +139,10 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
+		if err := authorizeInstance(r, found); err != nil {
+			writeForbidden(w, r)
+			return
+		}
 		JSON(w, http.StatusOK, statusResponse{
 			Status:          found.Status,
 			WhatsAppJID:     found.WhatsAppJID,
@@ -83,11 +153,36 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 }
 
 // handleDisconnectInstance ends the session of an instance, clearing its
-// paired identity and connection state, and answers 204.
+// paired identity and connection state, and answers 204. It loads the target
+// first (404) and authorizes (403) before touching the session.
+//
+// @Summary Disconnect an instance
+// @Tags connection
+// @Produce json
+// @Security apikey
+// @Param apikey header string true "Global, owning user, or own instance key"
+// @Param X-Request-Id header string false "Correlation id, echoed back"
+// @Param id path string true "Instance ID (UUID)"
+// @Success 204 "Disconnected, no body"
+// @Failure 401 {object} errorEnvelope "Missing or invalid credential"
+// @Failure 403 {object} errorEnvelope "Not the owner"
+// @Failure 404 {object} errorEnvelope "Instance not found"
+// @Failure 500 {object} errorEnvelope "Internal error"
+// @Router /instances/{id}/disconnect [post]
 func handleDisconnectInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 

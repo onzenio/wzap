@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -74,6 +75,10 @@ type InboundMessage struct {
 	// MediaDownload fetches the media bytes on demand. It is nil when the
 	// message carries no downloadable media.
 	MediaDownload func(ctx context.Context) ([]byte, error)
+	// Raw is the best-effort JSON of the raw upstream event, captured by the
+	// adapter for webhook delivery. It is nil when the capture failed or the
+	// source carried nothing worth keeping.
+	Raw json.RawMessage
 }
 
 // Receipt is a delivery/read acknowledgement for previously sent messages.
@@ -84,6 +89,9 @@ type Receipt struct {
 	SenderJID  string
 	Status     string
 	Timestamp  time.Time
+	// Raw is the best-effort JSON of the raw upstream event, captured by the
+	// adapter for webhook delivery. It is nil when the capture failed.
+	Raw json.RawMessage
 }
 
 // EventSink consumes session events. Implementations must be safe for

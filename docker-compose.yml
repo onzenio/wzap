@@ -39,7 +39,8 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      WZAP_SERVICE_TOKEN: ${WZAP_SERVICE_TOKEN:-dev-wzap-token}
+      WZAP_API_KEY: ${WZAP_API_KEY:-dev-wzap-token}
+      WZAP_JWT_SECRET: ${WZAP_JWT_SECRET:-dev-jwt-secret}
       WZAP_DATABASE_URL: postgres://wzap:${POSTGRES_PASSWORD:-secret}@postgres:5432/wzap?sslmode=disable
       WZAP_NATS_URL: nats://nats:4222
       WZAP_PUBLIC_URL: http://127.0.0.1:8081

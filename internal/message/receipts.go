@@ -8,6 +8,7 @@ import (
 	"wzap/internal/events"
 	"wzap/internal/session"
 	"wzap/internal/storage"
+	"wzap/internal/webhook"
 )
 
 // receiptEventType is the event type of the inbound receipt events.
@@ -26,15 +27,17 @@ type ReceiptStore interface {
 var _ ReceiptStore = (storage.MessageRepository)(nil)
 
 // Receipts projects the delivery/read acknowledgements of a session into the
-// stored messages and the event outbox.
+// stored messages and the event outbox. maxMediaBytes bounds the trimmed raw
+// upstream event carried by the receipt envelope (see Apply).
 type Receipts struct {
-	repo   ReceiptStore
-	writer events.Writer
+	repo          ReceiptStore
+	writer        events.Writer
+	maxMediaBytes int64
 }
 
 // NewReceipts builds the receipt projector over its dependencies.
-func NewReceipts(repo ReceiptStore, writer events.Writer) *Receipts {
-	return &Receipts{repo: repo, writer: writer}
+func NewReceipts(repo ReceiptStore, writer events.Writer, maxMediaBytes int64) *Receipts {
+	return &Receipts{repo: repo, writer: writer, maxMediaBytes: maxMediaBytes}
 }
 
 // Apply updates every message the receipt refers to and enqueues one receipt
@@ -73,6 +76,11 @@ func (r *Receipts) Apply(ctx context.Context, receipt session.Receipt) error {
 	})
 	if err != nil {
 		return fmt.Errorf("build receipt event: %w", err)
+	}
+	// The trimmed raw rides the envelope for NATS and webhook alike, so both
+	// consumers share the same bounded event.
+	if trimmed, _ := webhook.CutRawForLimit(receipt.Raw, r.maxMediaBytes); len(trimmed) > 0 {
+		env.Event = trimmed
 	}
 	if err := r.writer.Write(ctx, events.Subjects.Receipt(receipt.InstanceID), env); err != nil {
 		return fmt.Errorf("enqueue receipt event: %w", err)

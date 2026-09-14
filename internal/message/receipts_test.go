@@ -50,7 +50,7 @@ func TestReceiptsApplyUpdatesMessageAndEmitsEvent(t *testing.T) {
 	at := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: instanceID,
@@ -110,7 +110,7 @@ func TestReceiptsApplyProjectsEveryStatus(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}}
 			writer := &fakeWriter{}
-			receipts := NewReceipts(repo, writer)
+			receipts := NewReceipts(repo, writer, 1<<20)
 
 			err := receipts.Apply(context.Background(), session.Receipt{
 				InstanceID: uuid.New(),
@@ -138,7 +138,7 @@ func TestReceiptsApplyProjectsEveryStatus(t *testing.T) {
 func TestReceiptsApplyEmitsOnlyOwnMessages(t *testing.T) {
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.ours": true}}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: uuid.New(),
@@ -166,7 +166,7 @@ func TestReceiptsApplyEmitsOnlyOwnMessages(t *testing.T) {
 func TestReceiptsApplyIgnoresForeignMessages(t *testing.T) {
 	repo := &fakeReceiptRepo{known: map[string]bool{}}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: uuid.New(),
@@ -186,7 +186,7 @@ func TestReceiptsApplyIgnoresForeignMessages(t *testing.T) {
 func TestReceiptsApplyIgnoresNonProjectableStatus(t *testing.T) {
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: uuid.New(),
@@ -206,7 +206,7 @@ func TestReceiptsApplyIgnoresNonProjectableStatus(t *testing.T) {
 func TestReceiptsApplyWithoutMessageIDsDoesNothing(t *testing.T) {
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{InstanceID: uuid.New()})
 
@@ -222,7 +222,7 @@ func TestReceiptsApplyWithoutMessageIDsDoesNothing(t *testing.T) {
 func TestReceiptsApplyRepositoryFailureReturnsError(t *testing.T) {
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}, updateErr: errors.New("database down")}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: uuid.New(),
@@ -243,7 +243,7 @@ func TestReceiptsApplyWriterFailureReturnsError(t *testing.T) {
 	errWrite := errors.New("broker down")
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}}
 	writer := &fakeWriter{writeErr: errWrite}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: uuid.New(),
@@ -261,7 +261,7 @@ func TestReceiptsApplyDefaultsZeroTimestamp(t *testing.T) {
 	before := time.Now().UTC()
 	repo := &fakeReceiptRepo{known: map[string]bool{"wamid.1": true}}
 	writer := &fakeWriter{}
-	receipts := NewReceipts(repo, writer)
+	receipts := NewReceipts(repo, writer, 1<<20)
 
 	err := receipts.Apply(context.Background(), session.Receipt{
 		InstanceID: uuid.New(),

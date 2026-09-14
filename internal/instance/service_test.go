@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -267,11 +268,19 @@ func strptr(s string) *string { return &s }
 
 func TestServiceCreate(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+	owner := model.User{ID: uuid.New(), Email: "dono@example.com", Role: "user"}
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, newFakeUserRepo(owner), newFakeKeyRepo())
 
-	created, err := svc.Create(context.Background(), CreateInput{Name: "loja", ExternalRef: "crm-1"})
+	created, key, err := svc.Create(context.Background(), CreateInput{Name: "loja", ExternalRef: "crm-1", OwnerUserID: &owner.ID})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+
+	if key == "" {
+		t.Error("plaintext key is empty, want the one-time instance key")
+	}
+	if created.OwnerUserID == nil || *created.OwnerUserID != owner.ID {
+		t.Errorf("OwnerUserID = %v, want %s", created.OwnerUserID, owner.ID)
 	}
 
 	if created.ID == uuid.Nil {
@@ -291,9 +300,10 @@ func TestServiceCreate(t *testing.T) {
 func TestServiceCreateExternalRefTaken(t *testing.T) {
 	repo := newFakeRepo()
 	repo.createErr = fmt.Errorf("insert instance: %w", storage.ErrExternalRefTaken)
-	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+	owner := model.User{ID: uuid.New(), Email: "dono@example.com", Role: "user"}
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, newFakeUserRepo(owner), newFakeKeyRepo())
 
-	_, err := svc.Create(context.Background(), CreateInput{Name: "loja", ExternalRef: "crm-1"})
+	_, _, err := svc.Create(context.Background(), CreateInput{Name: "loja", ExternalRef: "crm-1", OwnerUserID: &owner.ID})
 	if !errors.Is(err, ErrExternalRefTaken) {
 		t.Fatalf("Create error = %v, want ErrExternalRefTaken", err)
 	}
@@ -301,19 +311,19 @@ func TestServiceCreateExternalRefTaken(t *testing.T) {
 
 func TestServiceGet(t *testing.T) {
 	want := model.Instance{ID: uuid.New(), Name: "loja", Status: "connected"}
-	svc := NewService(newFakeRepo(want), sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(newFakeRepo(want), sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	got, err := svc.Get(context.Background(), want.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if *got != want {
+	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("Get = %+v, want %+v", *got, want)
 	}
 }
 
 func TestServiceGetNotFound(t *testing.T) {
-	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, err := svc.Get(context.Background(), uuid.New())
 	if !errors.Is(err, ErrNotFound) {
@@ -325,7 +335,7 @@ func TestServiceList(t *testing.T) {
 	repo := newFakeRepo()
 	repo.listResult = []model.Instance{{ID: uuid.New(), Name: "a"}}
 	repo.nextCursor = "cursor-1"
-	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	items, next, err := svc.List(context.Background(), 25, "cursor-0")
 	if err != nil {
@@ -345,7 +355,7 @@ func TestServiceList(t *testing.T) {
 func TestServiceListInvalidCursor(t *testing.T) {
 	repo := newFakeRepo()
 	repo.listErr = fmt.Errorf("list instances: %w", storage.ErrInvalidCursor)
-	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, _, err := svc.List(context.Background(), 10, "not-a-uuid")
 	if !errors.Is(err, ErrInvalidCursor) {
@@ -386,17 +396,17 @@ func TestServiceUpdatePartial(t *testing.T) {
 			id := uuid.New()
 			stored := model.Instance{ID: id, Name: "antigo", ExternalRef: "ref-1", Status: "connected", WhatsAppJID: "5511@wa"}
 			repo := newFakeRepo(stored)
-			svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+			svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 			updated, err := svc.Update(context.Background(), id, tt.input)
 			if err != nil {
 				t.Fatalf("Update: %v", err)
 			}
 			tt.want.ID = id
-			if *updated != tt.want {
+			if !reflect.DeepEqual(*updated, tt.want) {
 				t.Errorf("Update = %+v, want %+v", *updated, tt.want)
 			}
-			if len(repo.updateCalls) != 1 || repo.updateCalls[0] != tt.want {
+			if len(repo.updateCalls) != 1 || !reflect.DeepEqual(repo.updateCalls[0], tt.want) {
 				t.Errorf("repo Update calls = %+v, want %+v", repo.updateCalls, tt.want)
 			}
 		})
@@ -404,7 +414,7 @@ func TestServiceUpdatePartial(t *testing.T) {
 }
 
 func TestServiceUpdateNotFound(t *testing.T) {
-	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, err := svc.Update(context.Background(), uuid.New(), UpdateInput{Name: strptr("novo")})
 	if !errors.Is(err, ErrNotFound) {
@@ -416,7 +426,7 @@ func TestServiceUpdateExternalRefTaken(t *testing.T) {
 	id := uuid.New()
 	repo := newFakeRepo(model.Instance{ID: id, Name: "loja"})
 	repo.updateErr = fmt.Errorf("update instance: %w", storage.ErrExternalRefTaken)
-	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, err := svc.Update(context.Background(), id, UpdateInput{ExternalRef: strptr("crm-1")})
 	if !errors.Is(err, ErrExternalRefTaken) {
@@ -431,7 +441,7 @@ func TestServiceDeleteRemovesSessionMediaAndRow(t *testing.T) {
 	repo.order = &order
 	sessions := &recordingManager{Fake: sessiontest.New(nil), order: &order}
 	media := &fakeMedia{order: &order}
-	svc := NewService(repo, sessions, media)
+	svc := NewService(repo, sessions, media, nil, nil)
 
 	if err := svc.Delete(context.Background(), id); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -461,7 +471,7 @@ func TestServiceDeleteNotFound(t *testing.T) {
 	repo.order = &order
 	sessions := &recordingManager{Fake: sessiontest.New(nil), order: &order}
 	media := &fakeMedia{order: &order}
-	svc := NewService(repo, sessions, media)
+	svc := NewService(repo, sessions, media, nil, nil)
 
 	err := svc.Delete(context.Background(), id)
 	if !errors.Is(err, ErrNotFound) {
@@ -481,7 +491,7 @@ func TestServiceDeleteStopsWhenSessionRemovalFails(t *testing.T) {
 	sessions := &recordingManager{Fake: sessiontest.New(nil), order: &order}
 	sessions.RemoveErr = errors.New("delete credentials failed")
 	media := &fakeMedia{order: &order}
-	svc := NewService(repo, sessions, media)
+	svc := NewService(repo, sessions, media, nil, nil)
 
 	err := svc.Delete(context.Background(), id)
 	if err == nil {
@@ -502,7 +512,7 @@ func TestServiceDeleteStopsWhenMediaDeletionFails(t *testing.T) {
 	repo.order = &order
 	sessions := &recordingManager{Fake: sessiontest.New(nil), order: &order}
 	media := &fakeMedia{order: &order, err: errors.New("remove media failed")}
-	svc := NewService(repo, sessions, media)
+	svc := NewService(repo, sessions, media, nil, nil)
 
 	err := svc.Delete(context.Background(), id)
 	if err == nil {
@@ -520,7 +530,7 @@ func TestServiceConnectStartsPairing(t *testing.T) {
 	id := uuid.New()
 	repo := newFakeRepo(model.Instance{ID: id, Name: "loja", Status: "disconnected"})
 	sessions := sessiontest.New(nil)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.Connect(context.Background(), id)
 	if err != nil {
@@ -565,7 +575,7 @@ func TestServiceConnectAlreadyConnectedSkipsQR(t *testing.T) {
 	sess.SetStatus(session.StatusConnected)
 	sess.SetJID("5511999999999@s.whatsapp.net")
 	sessions.Put(id, sess)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.Connect(context.Background(), id)
 	if err != nil {
@@ -598,7 +608,7 @@ func TestServiceConnectWhilePairingReturnsCurrentQR(t *testing.T) {
 	if _, _, err := sess.Connect(context.Background()); err != nil {
 		t.Fatalf("setup session Connect: %v", err)
 	}
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.Connect(context.Background(), id)
 	if err != nil {
@@ -618,7 +628,7 @@ func TestServiceConnectWhilePairingReturnsCurrentQR(t *testing.T) {
 }
 
 func TestServiceConnectNotFound(t *testing.T) {
-	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, err := svc.Connect(context.Background(), uuid.New())
 	if !errors.Is(err, ErrNotFound) {
@@ -631,7 +641,7 @@ func TestServiceConnectSessionFailure(t *testing.T) {
 	repo := newFakeRepo(model.Instance{ID: id, Name: "loja", Status: "disconnected"})
 	sessions := sessiontest.New(nil)
 	sessions.CreateErr = errors.New("open device store failed")
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	_, err := svc.Connect(context.Background(), id)
 	if err == nil {
@@ -651,7 +661,7 @@ func TestServiceQRReturnsCurrentCode(t *testing.T) {
 	if _, _, err := sess.Connect(context.Background()); err != nil {
 		t.Fatalf("setup session Connect: %v", err)
 	}
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.QR(context.Background(), id)
 	if err != nil {
@@ -677,7 +687,7 @@ func TestServiceQRStartsPairingWhenNoCode(t *testing.T) {
 	id := uuid.New()
 	repo := newFakeRepo(model.Instance{ID: id, Name: "loja", Status: "disconnected"})
 	sessions := sessiontest.New(nil)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.QR(context.Background(), id)
 	if err != nil {
@@ -702,7 +712,7 @@ func TestServiceQRWhilePairingWithoutCodeFails(t *testing.T) {
 	sess := sessiontest.NewSession(id, nil)
 	sess.SetStatus(session.StatusPairing)
 	sessions.Put(id, sess)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	_, err := svc.QR(context.Background(), id)
 	if err == nil {
@@ -720,7 +730,7 @@ func TestServiceQRAlreadyConnected(t *testing.T) {
 	sess := sessiontest.NewSession(id, nil)
 	sess.SetStatus(session.StatusConnected)
 	sessions.Put(id, sess)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	_, err := svc.QR(context.Background(), id)
 	if !errors.Is(err, ErrAlreadyConnected) {
@@ -729,7 +739,7 @@ func TestServiceQRAlreadyConnected(t *testing.T) {
 }
 
 func TestServiceQRNotFound(t *testing.T) {
-	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, err := svc.QR(context.Background(), uuid.New())
 	if !errors.Is(err, ErrNotFound) {
@@ -739,7 +749,7 @@ func TestServiceQRNotFound(t *testing.T) {
 
 func TestServiceRestoreCallsRestoreAll(t *testing.T) {
 	sessions := sessiontest.New(nil)
-	svc := NewService(newFakeRepo(), sessions, &fakeMedia{})
+	svc := NewService(newFakeRepo(), sessions, &fakeMedia{}, nil, nil)
 
 	if err := svc.Restore(context.Background()); err != nil {
 		t.Fatalf("Restore: %v", err)
@@ -752,7 +762,7 @@ func TestServiceRestoreCallsRestoreAll(t *testing.T) {
 func TestServiceRestorePropagatesFailure(t *testing.T) {
 	sessions := sessiontest.New(nil)
 	sessions.RestoreAllErr = errors.New("listing instances failed")
-	svc := NewService(newFakeRepo(), sessions, &fakeMedia{})
+	svc := NewService(newFakeRepo(), sessions, &fakeMedia{}, nil, nil)
 
 	err := svc.Restore(context.Background())
 	if err == nil {
@@ -774,7 +784,7 @@ func TestServiceDisconnectClearsIdentity(t *testing.T) {
 	sess.SetStatus(session.StatusConnected)
 	sess.SetJID("5511999999999@s.whatsapp.net")
 	sessions.Put(id, sess)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	if err := svc.Disconnect(context.Background(), id); err != nil {
 		t.Fatalf("Disconnect: %v", err)
@@ -805,7 +815,7 @@ func TestServiceDisconnectClearsIdentity(t *testing.T) {
 func TestServiceDisconnectNotFound(t *testing.T) {
 	repo := newFakeRepo()
 	sessions := sessiontest.New(nil)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	err := svc.Disconnect(context.Background(), uuid.New())
 	if !errors.Is(err, ErrNotFound) {
@@ -827,7 +837,7 @@ func TestServiceDisconnectStopsOnStatusUpdateFailure(t *testing.T) {
 	sessions := sessiontest.New(nil)
 	sess := sessiontest.NewSession(id, nil)
 	sessions.Put(id, sess)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	err := svc.Disconnect(context.Background(), id)
 	if err == nil {
@@ -851,7 +861,7 @@ func TestServiceDisconnectPropagatesCredentialRemovalFailure(t *testing.T) {
 	sess := sessiontest.NewSession(id, nil)
 	sessions.Put(id, sess)
 	sessions.RemoveErr = errors.New("delete credentials failed")
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	err := svc.Disconnect(context.Background(), id)
 	if err == nil {
@@ -866,7 +876,7 @@ func TestServiceConnectStopsOnStatusUpdateFailure(t *testing.T) {
 	id := uuid.New()
 	repo := newFakeRepo(model.Instance{ID: id, Name: "loja", Status: "disconnected"})
 	repo.setConnectionErr = errors.New("database down")
-	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{})
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, nil, nil)
 
 	_, err := svc.Connect(context.Background(), id)
 	if err == nil {
@@ -886,7 +896,7 @@ func TestServiceDisconnectStopsOnSessionFailure(t *testing.T) {
 	sess.SetJID("5511999999999@s.whatsapp.net")
 	sess.DisconnectErr = errors.New("disconnect failed")
 	sessions.Put(id, sess)
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	err := svc.Disconnect(context.Background(), id)
 	if err == nil {
@@ -910,7 +920,7 @@ func TestServiceDisconnectWithoutDeviceClearsPairing(t *testing.T) {
 		WhatsAppJID: "5511999999999@s.whatsapp.net",
 	})
 	sessions := &stalePairingManager{Fake: sessiontest.New(nil), failures: 1}
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	if err := svc.Disconnect(context.Background(), id); err != nil {
 		t.Fatalf("Disconnect: %v", err)
@@ -940,7 +950,7 @@ func TestServiceConnectWithoutDeviceStartsFreshPairing(t *testing.T) {
 		WhatsAppJID: "5511999999999@s.whatsapp.net",
 	})
 	sessions := &stalePairingManager{Fake: sessiontest.New(nil), failures: 1}
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.Connect(context.Background(), id)
 	if err != nil {
@@ -966,7 +976,7 @@ func TestServiceQRWithoutDeviceStartsFreshPairing(t *testing.T) {
 		WhatsAppJID: "5511999999999@s.whatsapp.net",
 	})
 	sessions := &stalePairingManager{Fake: sessiontest.New(nil), failures: 1}
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.QR(context.Background(), id)
 	if err != nil {
@@ -988,7 +998,7 @@ func TestServiceConnectResetsSessionWithoutDevice(t *testing.T) {
 	})
 	sess := &oneShotNoDeviceSession{FakeSession: sessiontest.NewSession(id, nil), fails: 1}
 	sessions := &staleConnectManager{Fake: sessiontest.New(nil), sess: sess}
-	svc := NewService(repo, sessions, &fakeMedia{})
+	svc := NewService(repo, sessions, &fakeMedia{}, nil, nil)
 
 	result, err := svc.Connect(context.Background(), id)
 	if err != nil {

@@ -27,6 +27,7 @@ import (
 	"wzap/internal/session/whatsmeow"
 	"wzap/internal/storage/postgres"
 	"wzap/internal/version"
+	"wzap/internal/webhook"
 )
 
 const (
@@ -65,7 +66,8 @@ func run(args []string) error {
 
 // serve runs the HTTP server until an interrupt or termination signal. The
 // shutdown drains the in-flight requests first, then stops the outbox, the
-// media cleaner and finally the relay, all within shutdownTimeout.
+// media cleaner, the webhook worker and finally the relay, all within
+// shutdownTimeout.
 func serve() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -121,6 +123,15 @@ func serve() error {
 	}
 
 	instances := postgres.NewInstanceRepository(pool)
+	users := postgres.NewUserRepository(pool)
+	keys := postgres.NewAPIKeyRepository(pool)
+
+	// Seed the initial admin (and claim the legacy ownerless instances for
+	// him) before serving. Without WZAP_ADMIN_* this is a no-op.
+	if err := seedAdmin(ctx, cfg, users, instances, log); err != nil {
+		return err
+	}
+
 	messageRepo := postgres.NewMessageRepository(pool)
 	idempotencyRepo := postgres.NewIdempotencyRepository(pool)
 	outbox := postgres.NewEventOutboxRepository(pool)
@@ -130,8 +141,14 @@ func serve() error {
 	checker := httpapi.NewChecker(pool, httpapi.NamedProbe{Name: "nats", Run: publisher.Ready})
 
 	eventWriter := events.NewWriter(outbox)
+	// Webhook fan-out: every event of every type flows through Writer
+	// (message, receipt, connection, message.status), so decorating it once
+	// hooks all producers with no per-producer wiring. The NATS relay replays
+	// from the DB outbox, NOT through Writer, so there is no double delivery.
+	webhookWorker := webhook.NewWorker(instances, webhook.Keys, webhook.Deliver, cfg.MaxMediaBytes, log)
+	webhookWriter := webhookWorker.Fanout(eventWriter)
 	runtime := app.NewRuntime(
-		instances, eventWriter, message.NewReceipts(messageRepo, eventWriter),
+		instances, webhookWriter, message.NewReceipts(messageRepo, webhookWriter, cfg.MaxMediaBytes),
 		mediaStorage, cfg.PublicURL, cfg.MaxMediaBytes, log,
 	)
 	sessions, err := whatsmeow.NewManager(ctx, cfg.DatabaseURL, instances, log, runtime, cfg.MaxMediaBytes)
@@ -140,7 +157,7 @@ func serve() error {
 	}
 	defer func() { _ = sessions.Close() }()
 
-	service := instance.NewService(instances, sessions, mediaStorage)
+	service := instance.NewService(instances, sessions, mediaStorage, users, keys)
 	numbers := message.NewJIDResolver(sessions, postgres.NewJIDCacheRepository(pool), log)
 	messages := message.NewService(instances, numbers, messageRepo)
 
@@ -155,7 +172,7 @@ func serve() error {
 		log.Warn("restore sessions not completed", "error", restoreErr)
 	}
 
-	outboxWorker := message.NewOutbox(messageRepo, sessions, eventWriter, mediaStorage, log, cfg.OutboxWorkers, instancelock.New(), cfg.Humanize)
+	outboxWorker := message.NewOutbox(messageRepo, sessions, webhookWriter, mediaStorage, log, cfg.OutboxWorkers, instancelock.New(), cfg.Humanize)
 
 	srv := httpapi.New(cfg, log, httpapi.Deps{
 		ReadyChecker: checker,
@@ -164,6 +181,9 @@ func serve() error {
 		Messages:     messages,
 		Idempotency:  idempotencyRepo,
 		Media:        mediaStorage,
+		Users:        users,
+		Keys:         keys,
+		JWTSecret:    cfg.JWTSecret,
 	})
 
 	// The workers do not derive from the signal context: SIGTERM must not stop
@@ -194,6 +214,14 @@ func serve() error {
 		cleaner.Run(cleanerCtx)
 	}()
 
+	webhookCtx, stopWebhook := context.WithCancel(context.Background())
+	defer stopWebhook()
+	webhookDone := make(chan struct{})
+	go func() {
+		defer close(webhookDone)
+		webhookWorker.Run(webhookCtx)
+	}()
+
 	log.Info("wzap listening", "version", version.Version, "addr", cfg.HTTPAddr)
 
 	serveErr := make(chan error, 1)
@@ -210,6 +238,7 @@ func serve() error {
 		stopComponents(shutdownCtx, log,
 			shutdownComponent{name: "outbox", stop: stopOutbox, done: outboxDone},
 			shutdownComponent{name: "media cleaner", stop: stopCleaner, done: cleanerDone},
+			shutdownComponent{name: "webhook worker", stop: stopWebhook, done: webhookDone},
 			shutdownComponent{name: "event relay", stop: stopRelay, done: relayDone},
 		)
 		return fmt.Errorf("serve http: %w", err)
@@ -225,12 +254,15 @@ func serve() error {
 
 	// The HTTP server drains first so in-flight requests finish and can still
 	// enqueue events. Only then the outbox stops sending, the cleaner stops
-	// deleting media, and the relay stops last, after publishing the events
+	// deleting media, the webhook worker stops (dropping its pending queue
+	// without a drain: webhooks are best-effort and the shared budget belongs
+	// to the relay), and the relay stops last, after publishing the events
 	// those requests and the outbox enqueued. Every wait shares the shutdown
 	// deadline, so the whole sequence stays bounded.
 	stopComponents(shutdownCtx, log,
 		shutdownComponent{name: "outbox", stop: stopOutbox, done: outboxDone},
 		shutdownComponent{name: "media cleaner", stop: stopCleaner, done: cleanerDone},
+		shutdownComponent{name: "webhook worker", stop: stopWebhook, done: webhookDone},
 		shutdownComponent{name: "event relay", stop: stopRelay, done: relayDone},
 	)
 

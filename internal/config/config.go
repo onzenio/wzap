@@ -13,7 +13,12 @@ import (
 type Config struct {
 	HTTPAddr           string
 	PublicURL          string
-	ServiceToken       string
+	APIKey             string
+	AdminEmail         string
+	AdminPassword      string
+	JWTSecret          string
+	MaxInstances       int
+	DefaultUserQuota   int
 	DatabaseURL        string
 	NATSURL            string
 	NATSStream         string
@@ -48,22 +53,26 @@ func Load() (Config, error) {
 	var problems []string
 
 	cfg := Config{
-		HTTPAddr:     envOrDefault("WZAP_HTTP_ADDR", defaultHTTPAddr),
-		PublicURL:    os.Getenv("WZAP_PUBLIC_URL"),
-		ServiceToken: os.Getenv("WZAP_SERVICE_TOKEN"),
-		DatabaseURL:  os.Getenv("WZAP_DATABASE_URL"),
-		NATSURL:      os.Getenv("WZAP_NATS_URL"),
-		NATSStream:   envOrDefault("WZAP_NATS_STREAM", defaultNATSStream),
-		DataDir:      envOrDefault("WZAP_DATA_DIR", defaultDataDir),
-		LogLevel:     envOrDefault("WZAP_LOG_LEVEL", defaultLogLevel),
-		LogFormat:    envOrDefault("WZAP_LOG_FORMAT", defaultLogFormat),
+		HTTPAddr:      envOrDefault("WZAP_HTTP_ADDR", defaultHTTPAddr),
+		PublicURL:     os.Getenv("WZAP_PUBLIC_URL"),
+		APIKey:        os.Getenv("WZAP_API_KEY"),
+		AdminEmail:    os.Getenv("WZAP_ADMIN_EMAIL"),
+		AdminPassword: os.Getenv("WZAP_ADMIN_PASSWORD"),
+		JWTSecret:     os.Getenv("WZAP_JWT_SECRET"),
+		DatabaseURL:   os.Getenv("WZAP_DATABASE_URL"),
+		NATSURL:       os.Getenv("WZAP_NATS_URL"),
+		NATSStream:    envOrDefault("WZAP_NATS_STREAM", defaultNATSStream),
+		DataDir:       envOrDefault("WZAP_DATA_DIR", defaultDataDir),
+		LogLevel:      envOrDefault("WZAP_LOG_LEVEL", defaultLogLevel),
+		LogFormat:     envOrDefault("WZAP_LOG_FORMAT", defaultLogFormat),
 	}
 
 	for _, required := range []struct {
 		name  string
 		value string
 	}{
-		{"WZAP_SERVICE_TOKEN", cfg.ServiceToken},
+		{"WZAP_API_KEY", cfg.APIKey},
+		{"WZAP_JWT_SECRET", cfg.JWTSecret},
 		{"WZAP_DATABASE_URL", cfg.DatabaseURL},
 		{"WZAP_NATS_URL", cfg.NATSURL},
 	} {
@@ -76,6 +85,8 @@ func Load() (Config, error) {
 	cfg.MediaTTLSeconds = positiveIntValue("WZAP_MEDIA_TTL_SECONDS", defaultMediaTTLSeconds, &problems)
 	cfg.MaxMediaBytes = positiveInt64Value("WZAP_MAX_MEDIA_BYTES", defaultMaxMediaBytes, &problems)
 	cfg.OutboxWorkers = positiveIntValue("WZAP_OUTBOX_WORKERS", defaultOutboxWorkers, &problems)
+	cfg.MaxInstances = nonNegativeIntValue("WZAP_MAX_INSTANCES", 0, &problems)
+	cfg.DefaultUserQuota = nonNegativeIntValue("WZAP_DEFAULT_USER_INSTANCE_QUOTA", 0, &problems)
 	cfg.Humanize = boolValue("WZAP_HUMANIZE", false, &problems)
 	cfg.AutoMigrate = boolValue("WZAP_AUTO_MIGRATE", defaultAutoMigrate, &problems)
 
@@ -107,6 +118,25 @@ func positiveIntValue(name string, fallback int, problems *[]string) int {
 	}
 	if value <= 0 {
 		*problems = append(*problems, fmt.Sprintf("%s must be positive, got %q", name, raw))
+		return fallback
+	}
+	return value
+}
+
+// nonNegativeIntValue reads a numeric variable where zero is meaningful
+// (unlimited), reporting malformed and negative values.
+func nonNegativeIntValue(name string, fallback int, problems *[]string) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		*problems = append(*problems, fmt.Sprintf("%s must be an integer, got %q", name, raw))
+		return fallback
+	}
+	if value < 0 {
+		*problems = append(*problems, fmt.Sprintf("%s must be non-negative, got %q", name, raw))
 		return fallback
 	}
 	return value

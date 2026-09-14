@@ -92,7 +92,9 @@ func messagesServer(t *testing.T, svc MessageService, repo storage.IdempotencyRe
 }
 
 // mediaUploadServer builds the server under test with the given message
-// service, media store and idempotency repository.
+// service, media store and idempotency repository. Instances default to a
+// fake answering every id so global-scope tests exercise the operation
+// behind the ownership gate.
 func mediaUploadServer(t *testing.T, svc MessageService, store MediaStore, repo storage.IdempotencyRepository) *http.Server {
 	t.Helper()
 	if svc == nil {
@@ -104,10 +106,11 @@ func mediaUploadServer(t *testing.T, svc MessageService, store MediaStore, repo 
 	if repo == nil {
 		repo = newFakeIdempotency()
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken, MaxMediaBytes: testMaxMediaBytes},
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken, MaxMediaBytes: testMaxMediaBytes},
 		discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
+			Instances:    &fakeInstanceService{},
 			Messages:     svc,
 			Media:        store,
 			Idempotency:  repo,
@@ -123,8 +126,8 @@ func serveMediaUpload(
 	t.Helper()
 
 	body, formType := multipartBody(t, fields, filename, contentType, content)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/media", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req := httptest.NewRequest(http.MethodPost, "/instances/"+id.String()+"/messages/media", bytes.NewReader(body))
+	req.Header.Set("apikey", testToken)
 	req.Header.Set("Content-Type", formType)
 	for name, value := range headers {
 		req.Header.Set(name, value)
@@ -143,7 +146,7 @@ func serveMessages(t *testing.T, srv *http.Server, method, path, body string, he
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
@@ -174,7 +177,7 @@ func TestSendTextAccepted(t *testing.T) {
 	}}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/messages/text", `{"to":"5547988359190","text":"olá"}`, nil)
+		"/instances/"+id.String()+"/messages/text", `{"to":"5547988359190","text":"olá"}`, nil)
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
@@ -202,7 +205,7 @@ func TestSendLocationAccepted(t *testing.T) {
 	}}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/messages/location",
+		"/instances/"+id.String()+"/messages/location",
 		`{"to":"5547988359190","latitude":-23.55,"longitude":-46.63}`, nil)
 
 	if rec.Code != http.StatusAccepted {
@@ -214,7 +217,7 @@ func TestSendLocationRequiresCoordinates(t *testing.T) {
 	svc := &fakeMessageService{}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-		"/api/v1/instances/"+uuid.NewString()+"/messages/location", `{"to":"5547988359190","latitude":-23.55}`, nil)
+		"/instances/"+uuid.NewString()+"/messages/location", `{"to":"5547988359190","latitude":-23.55}`, nil)
 
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
@@ -237,7 +240,7 @@ func TestSendContactAccepted(t *testing.T) {
 	}}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/messages/contact",
+		"/instances/"+id.String()+"/messages/contact",
 		`{"to":"5547988359190","display_name":"Fulano","vcard":"BEGIN:VCARD"}`, nil)
 
 	if rec.Code != http.StatusAccepted {
@@ -249,7 +252,7 @@ func TestSendRejectsMalformedBody(t *testing.T) {
 	svc := &fakeMessageService{}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-		"/api/v1/instances/"+uuid.NewString()+"/messages/text", `{"to":`, nil)
+		"/instances/"+uuid.NewString()+"/messages/text", `{"to":`, nil)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -266,7 +269,7 @@ func TestSendRejectsMalformedInstanceID(t *testing.T) {
 	svc := &fakeMessageService{}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-		"/api/v1/instances/not-a-uuid/messages/text", `{"to":"5547","text":"olá"}`, nil)
+		"/instances/not-a-uuid/messages/text", `{"to":"5547","text":"olá"}`, nil)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -298,7 +301,7 @@ func TestSendErrorMapping(t *testing.T) {
 			}}
 
 			rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodPost,
-				"/api/v1/instances/"+uuid.NewString()+"/messages/text", `{"to":"5547","text":"olá"}`, nil)
+				"/instances/"+uuid.NewString()+"/messages/text", `{"to":"5547","text":"olá"}`, nil)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
@@ -317,7 +320,7 @@ func TestSendTextReplayThroughServer(t *testing.T) {
 		return messageID, nil
 	}}
 	srv := messagesServer(t, svc, newFakeIdempotency())
-	path := "/api/v1/instances/" + id.String() + "/messages/text"
+	path := "/instances/" + id.String() + "/messages/text"
 	headers := map[string]string{idempotencyKeyHeader: "key-1"}
 
 	first := serveMessages(t, srv, http.MethodPost, path, `{"to":"5547","text":"olá"}`, headers)
@@ -344,7 +347,7 @@ func TestSendTextWithoutKeyEnqueuesTwice(t *testing.T) {
 	id := uuid.New()
 	svc := &fakeMessageService{}
 	srv := messagesServer(t, svc, newFakeIdempotency())
-	path := "/api/v1/instances/" + id.String() + "/messages/text"
+	path := "/instances/" + id.String() + "/messages/text"
 
 	serveMessages(t, srv, http.MethodPost, path, `{"to":"5547","text":"olá"}`, nil)
 	serveMessages(t, srv, http.MethodPost, path, `{"to":"5547","text":"olá"}`, nil)
@@ -378,7 +381,7 @@ func TestGetMessage(t *testing.T) {
 	}}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodGet,
-		"/api/v1/instances/"+id.String()+"/messages/"+messageID.String(), "", nil)
+		"/instances/"+id.String()+"/messages/"+messageID.String(), "", nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -414,7 +417,7 @@ func TestGetMessageNotFound(t *testing.T) {
 	svc := &fakeMessageService{}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodGet,
-		"/api/v1/instances/"+uuid.NewString()+"/messages/"+uuid.NewString(), "", nil)
+		"/instances/"+uuid.NewString()+"/messages/"+uuid.NewString(), "", nil)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -428,7 +431,7 @@ func TestGetMessageRejectsMalformedID(t *testing.T) {
 	svc := &fakeMessageService{}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodGet,
-		"/api/v1/instances/"+uuid.NewString()+"/messages/not-a-uuid", "", nil)
+		"/instances/"+uuid.NewString()+"/messages/not-a-uuid", "", nil)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -448,7 +451,7 @@ func TestListMessages(t *testing.T) {
 	}}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodGet,
-		"/api/v1/instances/"+id.String()+"/messages?limit=10&cursor=start", "", nil)
+		"/instances/"+id.String()+"/messages?limit=10&cursor=start", "", nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -472,7 +475,7 @@ func TestListMessagesDefaultsLimit(t *testing.T) {
 	svc := &fakeMessageService{}
 
 	serveMessages(t, messagesServer(t, svc, nil), http.MethodGet,
-		"/api/v1/instances/"+uuid.NewString()+"/messages", "", nil)
+		"/instances/"+uuid.NewString()+"/messages", "", nil)
 
 	if len(svc.listCalls) != 1 || svc.listCalls[0].limit != defaultMessagesLimit {
 		t.Errorf("List calls = %+v, want the default limit %d", svc.listCalls, defaultMessagesLimit)
@@ -485,7 +488,7 @@ func TestListMessagesInvalidCursor(t *testing.T) {
 	}}
 
 	rec := serveMessages(t, messagesServer(t, svc, nil), http.MethodGet,
-		"/api/v1/instances/"+uuid.NewString()+"/messages?cursor=bad", "", nil)
+		"/instances/"+uuid.NewString()+"/messages?cursor=bad", "", nil)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -497,7 +500,7 @@ func TestListMessagesInvalidCursor(t *testing.T) {
 
 func TestListMessagesEmptyPageIsArray(t *testing.T) {
 	rec := serveMessages(t, messagesServer(t, &fakeMessageService{}, nil), http.MethodGet,
-		"/api/v1/instances/"+uuid.NewString()+"/messages", "", nil)
+		"/instances/"+uuid.NewString()+"/messages", "", nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -765,9 +768,9 @@ func TestSendMediaRejectsMalformedMultipart(t *testing.T) {
 	svc := &fakeMessageService{}
 	srv := mediaUploadServer(t, svc, store, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/media",
+	req := httptest.NewRequest(http.MethodPost, "/instances/"+id.String()+"/messages/media",
 		strings.NewReader("não é multipart"))
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)

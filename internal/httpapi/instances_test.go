@@ -20,14 +20,15 @@ import (
 // configure each outcome and the recorded fields expose the calls the handlers
 // made.
 type fakeInstanceService struct {
-	createFn     func(ctx context.Context, input instance.CreateInput) (*model.Instance, error)
-	getFn        func(ctx context.Context, id uuid.UUID) (*model.Instance, error)
-	listFn       func(ctx context.Context, limit int, cursor string) ([]model.Instance, string, error)
-	updateFn     func(ctx context.Context, id uuid.UUID, input instance.UpdateInput) (*model.Instance, error)
-	deleteFn     func(ctx context.Context, id uuid.UUID) error
-	disconnectFn func(ctx context.Context, id uuid.UUID) error
-	connectFn    func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
-	qrFn         func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
+	createFn      func(ctx context.Context, input instance.CreateInput) (*model.Instance, string, error)
+	oldestAdminFn func(ctx context.Context) (uuid.UUID, error)
+	getFn         func(ctx context.Context, id uuid.UUID) (*model.Instance, error)
+	listFn        func(ctx context.Context, limit int, cursor string) ([]model.Instance, string, error)
+	updateFn      func(ctx context.Context, id uuid.UUID, input instance.UpdateInput) (*model.Instance, error)
+	deleteFn      func(ctx context.Context, id uuid.UUID) error
+	disconnectFn  func(ctx context.Context, id uuid.UUID) error
+	connectFn     func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
+	qrFn          func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
 
 	createInputs  []instance.CreateInput
 	updateInputs  []instance.UpdateInput
@@ -40,24 +41,33 @@ type fakeInstanceService struct {
 	listCursor    string
 }
 
-// Create records the input and returns the configured instance, defaulting to a
-// fresh disconnected instance.
-func (f *fakeInstanceService) Create(ctx context.Context, input instance.CreateInput) (*model.Instance, error) {
+// Create records the input and returns the configured instance with its
+// one-time key, defaulting to a fresh disconnected instance with an empty key.
+func (f *fakeInstanceService) Create(ctx context.Context, input instance.CreateInput) (*model.Instance, string, error) {
 	f.createInputs = append(f.createInputs, input)
 	if f.createFn != nil {
 		return f.createFn(ctx, input)
 	}
-	return &model.Instance{ID: uuid.New(), Name: input.Name, ExternalRef: input.ExternalRef, Status: "disconnected"}, nil
+	return &model.Instance{ID: uuid.New(), Name: input.Name, ExternalRef: input.ExternalRef, Status: "disconnected", OwnerUserID: input.OwnerUserID}, "", nil
 }
 
-// Get records the id and returns the configured instance, defaulting to
-// instance.ErrNotFound.
+// OldestAdmin returns the configured oldest admin, defaulting to a fresh id.
+func (f *fakeInstanceService) OldestAdmin(ctx context.Context) (uuid.UUID, error) {
+	if f.oldestAdminFn != nil {
+		return f.oldestAdminFn(ctx)
+	}
+	return uuid.New(), nil
+}
+
+// Get records the id and returns the configured instance, defaulting to a
+// stored disconnected instance with the requested id so global-scope tests
+// exercise the operation behind the ownership gate.
 func (f *fakeInstanceService) Get(ctx context.Context, id uuid.UUID) (*model.Instance, error) {
 	f.getIDs = append(f.getIDs, id)
 	if f.getFn != nil {
 		return f.getFn(ctx, id)
 	}
-	return nil, instance.ErrNotFound
+	return &model.Instance{ID: id, Name: "loja", Status: "disconnected"}, nil
 }
 
 // List records the pagination and returns the configured page, defaulting to an
@@ -126,7 +136,7 @@ func instancesServer(t *testing.T, svc InstanceService) *http.Server {
 	if svc == nil {
 		svc = &fakeInstanceService{}
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    svc,
@@ -142,29 +152,36 @@ func serveJSON(t *testing.T, srv *http.Server, method, path, body string) *httpt
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("apikey", testToken)
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 	return rec
 }
 
 func TestInstancesCreate(t *testing.T) {
-	created := &model.Instance{ID: uuid.New(), Name: "loja", ExternalRef: "crm-1", Status: "disconnected"}
-	svc := &fakeInstanceService{createFn: func(_ context.Context, input instance.CreateInput) (*model.Instance, error) {
-		if input.Name != "loja" || input.ExternalRef != "crm-1" {
-			t.Errorf("Create input = %+v, want name loja and external ref crm-1", input)
-		}
-		return created, nil
-	}}
+	oldest := uuid.New()
+	created := &model.Instance{ID: uuid.New(), Name: "loja", ExternalRef: "crm-1", Status: "disconnected", OwnerUserID: &oldest}
+	svc := &fakeInstanceService{
+		oldestAdminFn: func(context.Context) (uuid.UUID, error) { return oldest, nil },
+		createFn: func(_ context.Context, input instance.CreateInput) (*model.Instance, string, error) {
+			if input.Name != "loja" || input.ExternalRef != "crm-1" {
+				t.Errorf("Create input = %+v, want name loja and external ref crm-1", input)
+			}
+			if input.OwnerUserID == nil || *input.OwnerUserID != oldest {
+				t.Errorf("Create owner = %v, want the oldest admin %s", input.OwnerUserID, oldest)
+			}
+			return created, "one-time-key", nil
+		},
+	}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances",
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances",
 		`{"name":"loja","external_ref":"crm-1"}`)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 	var payload struct {
-		Data instanceResponse `json:"data"`
+		Data createInstanceResponse `json:"data"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &payload)
 	if payload.Data.ID != created.ID.String() {
@@ -176,14 +193,20 @@ func TestInstancesCreate(t *testing.T) {
 	if payload.Data.Name != "loja" || payload.Data.ExternalRef != "crm-1" {
 		t.Errorf("data = %+v, want name loja and external ref crm-1", payload.Data)
 	}
+	if payload.Data.OwnerUserID == nil || *payload.Data.OwnerUserID != oldest {
+		t.Errorf("data.owner_user_id = %v, want the oldest admin %s", payload.Data.OwnerUserID, oldest)
+	}
+	if payload.Data.InstanceAPIKey != "one-time-key" {
+		t.Errorf("data.instance_api_key = %q, want the one-time key", payload.Data.InstanceAPIKey)
+	}
 }
 
 func TestInstancesCreateDuplicateExternalRef(t *testing.T) {
-	svc := &fakeInstanceService{createFn: func(context.Context, instance.CreateInput) (*model.Instance, error) {
-		return nil, instance.ErrExternalRefTaken
+	svc := &fakeInstanceService{createFn: func(context.Context, instance.CreateInput) (*model.Instance, string, error) {
+		return nil, "", instance.ErrExternalRefTaken
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances",
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances",
 		`{"name":"loja","external_ref":"crm-1"}`)
 
 	if rec.Code != http.StatusConflict {
@@ -197,7 +220,7 @@ func TestInstancesCreateDuplicateExternalRef(t *testing.T) {
 func TestInstancesCreateRejectsInvalidBody(t *testing.T) {
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances", `{"name":`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances", `{"name":`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -214,7 +237,7 @@ func TestInstancesCreateRejectsOversizedBody(t *testing.T) {
 	svc := &fakeInstanceService{}
 	oversized := `{"name":"` + strings.Repeat("a", maxJSONBodyBytes+1) + `"}`
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances", oversized)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances", oversized)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
@@ -240,7 +263,7 @@ func TestInstancesList(t *testing.T) {
 		return []model.Instance{first, second}, "cursor-1", nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -272,7 +295,7 @@ func TestInstancesList(t *testing.T) {
 func TestInstancesListPassesPagination(t *testing.T) {
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances?limit=7&cursor=abc", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances?limit=7&cursor=abc", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -306,7 +329,7 @@ func TestInstancesListLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := &fakeInstanceService{}
 
-			rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances"+tt.query, "")
+			rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances"+tt.query, "")
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -323,7 +346,7 @@ func TestInstancesListRejectsInvalidCursor(t *testing.T) {
 		return nil, "", instance.ErrInvalidCursor
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances?cursor=not-a-uuid", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances?cursor=not-a-uuid", "")
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -342,7 +365,7 @@ func TestInstancesGet(t *testing.T) {
 		return want, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+want.ID.String(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+want.ID.String(), "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -361,7 +384,7 @@ func TestInstancesGetNotFound(t *testing.T) {
 		return nil, instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+uuid.NewString(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -374,7 +397,7 @@ func TestInstancesGetNotFound(t *testing.T) {
 func TestInstancesGetRejectsMalformedID(t *testing.T) {
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/not-a-uuid", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/not-a-uuid", "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -403,7 +426,7 @@ func TestInstancesUpdate(t *testing.T) {
 		return updated, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/api/v1/instances/"+id.String(), `{"name":"novo"}`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/instances/"+id.String(), `{"name":"novo"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -426,7 +449,7 @@ func TestInstancesUpdateClearsExternalRef(t *testing.T) {
 		return &model.Instance{ID: id, Name: "loja", Status: "disconnected"}, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/api/v1/instances/"+id.String(), `{"external_ref":""}`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/instances/"+id.String(), `{"external_ref":""}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -438,7 +461,7 @@ func TestInstancesUpdateNotFound(t *testing.T) {
 		return nil, instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/api/v1/instances/"+uuid.NewString(), `{"name":"novo"}`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/instances/"+uuid.NewString(), `{"name":"novo"}`)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -452,7 +475,7 @@ func TestInstancesDelete(t *testing.T) {
 	id := uuid.New()
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/api/v1/instances/"+id.String(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/instances/"+id.String(), "")
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
@@ -470,7 +493,7 @@ func TestInstancesDeleteNotFound(t *testing.T) {
 		return instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/api/v1/instances/"+uuid.NewString(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/instances/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -485,7 +508,7 @@ func TestInstancesInternalError(t *testing.T) {
 		return nil, context.DeadlineExceeded
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+uuid.NewString(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)

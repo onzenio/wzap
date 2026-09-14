@@ -43,7 +43,7 @@ func numbersServer(t *testing.T, instances InstanceService, numbers NumberResolv
 	if numbers == nil {
 		numbers = &fakeNumberResolver{}
 	}
-	return New(config.Config{HTTPAddr: "127.0.0.1:0", ServiceToken: testToken}, discardLogger(),
+	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
 			Instances:    instances,
@@ -79,7 +79,7 @@ func TestNumbersCheckFound(t *testing.T) {
 	}}
 
 	rec := serveJSON(t, numbersServer(t, existingInstanceService(), resolver), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/numbers/check", `{"phone":"+55 (47) 98835-9190"}`)
+		"/instances/"+id.String()+"/numbers/check", `{"phone":"+55 (47) 98835-9190"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -106,7 +106,7 @@ func TestNumbersCheckNotFound(t *testing.T) {
 	}}
 
 	rec := serveJSON(t, numbersServer(t, existingInstanceService(), resolver), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/numbers/check", `{"phone":"5547999999999"}`)
+		"/instances/"+id.String()+"/numbers/check", `{"phone":"5547999999999"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -134,7 +134,7 @@ func TestNumbersCheckInstanceNotFound(t *testing.T) {
 	resolver := &fakeNumberResolver{}
 
 	rec := serveJSON(t, numbersServer(t, svc, resolver), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/numbers/check", `{"phone":"5547988359190"}`)
+		"/instances/"+id.String()+"/numbers/check", `{"phone":"5547988359190"}`)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -154,7 +154,7 @@ func TestNumbersCheckResolverUnavailable(t *testing.T) {
 	}}
 
 	rec := serveJSON(t, numbersServer(t, existingInstanceService(), resolver), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/numbers/check", `{"phone":"5547988359190"}`)
+		"/instances/"+id.String()+"/numbers/check", `{"phone":"5547988359190"}`)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -168,7 +168,7 @@ func TestNumbersCheckRejectsInvalidBody(t *testing.T) {
 	resolver := &fakeNumberResolver{}
 
 	rec := serveJSON(t, numbersServer(t, existingInstanceService(), resolver), http.MethodPost,
-		"/api/v1/instances/"+uuid.NewString()+"/numbers/check", `{"phone":`)
+		"/instances/"+uuid.NewString()+"/numbers/check", `{"phone":`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -186,7 +186,7 @@ func TestNumbersCheckRejectsEmptyPhone(t *testing.T) {
 	resolver := &fakeNumberResolver{}
 
 	rec := serveJSON(t, numbersServer(t, svc, resolver), http.MethodPost,
-		"/api/v1/instances/"+uuid.NewString()+"/numbers/check", `{"phone":"  "}`)
+		"/instances/"+uuid.NewString()+"/numbers/check", `{"phone":"  "}`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -203,7 +203,7 @@ func TestNumbersCheckRejectsMalformedInstanceID(t *testing.T) {
 	resolver := &fakeNumberResolver{}
 
 	rec := serveJSON(t, numbersServer(t, existingInstanceService(), resolver), http.MethodPost,
-		"/api/v1/instances/not-a-uuid/numbers/check", `{"phone":"5547988359190"}`)
+		"/instances/not-a-uuid/numbers/check", `{"phone":"5547988359190"}`)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -223,7 +223,7 @@ func TestNumbersCheckInternalError(t *testing.T) {
 	}}
 
 	rec := serveJSON(t, numbersServer(t, existingInstanceService(), resolver), http.MethodPost,
-		"/api/v1/instances/"+id.String()+"/numbers/check", `{"phone":"5547988359190"}`)
+		"/instances/"+id.String()+"/numbers/check", `{"phone":"5547988359190"}`)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)

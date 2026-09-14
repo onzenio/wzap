@@ -170,6 +170,57 @@ func TestInstanceRepositoryCreateWithoutExternalRef(t *testing.T) {
 	}
 }
 
+func TestInstanceRepositoryCreateWithOwner(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	instances := NewInstanceRepository(pool)
+	users := NewUserRepository(pool)
+
+	owner := createTestUser(t, users, "owner@example.com", "user", 3)
+
+	created, err := instances.Create(ctx, model.Instance{
+		ID: uuid.New(), Name: "owned", ExternalRef: "owned-ref",
+		Status: "disconnected", OwnerUserID: &owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.OwnerUserID == nil || *created.OwnerUserID != owner.ID {
+		t.Fatalf("Create OwnerUserID = %v, want %s", created.OwnerUserID, owner.ID)
+	}
+
+	var storedOwner uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT owner_user_id FROM instances WHERE id = $1`, created.ID).Scan(&storedOwner); err != nil {
+		t.Fatalf("select owner_user_id: %v", err)
+	}
+	if storedOwner != owner.ID {
+		t.Errorf("owner_user_id column = %s, want %s", storedOwner, owner.ID)
+	}
+
+	got, err := instances.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.OwnerUserID == nil || *got.OwnerUserID != owner.ID {
+		t.Errorf("Get OwnerUserID = %v, want %s", got.OwnerUserID, owner.ID)
+	}
+	if got.WebhookURL != nil {
+		t.Errorf("Get WebhookURL = %q, want nil by default", *got.WebhookURL)
+	}
+	if got.WebhookEnabled {
+		t.Error("Get WebhookEnabled = true, want false by default")
+	}
+	wantEvents := []string{"message", "receipt", "connection", "message.status"}
+	if len(got.WebhookEvents) != len(wantEvents) {
+		t.Fatalf("Get WebhookEvents = %v, want %v", got.WebhookEvents, wantEvents)
+	}
+	for i := range wantEvents {
+		if got.WebhookEvents[i] != wantEvents[i] {
+			t.Fatalf("Get WebhookEvents = %v, want %v", got.WebhookEvents, wantEvents)
+		}
+	}
+}
+
 func TestInstanceRepositoryGet(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)

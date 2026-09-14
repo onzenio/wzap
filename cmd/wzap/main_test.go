@@ -44,7 +44,8 @@ func TestReadyURL(t *testing.T) {
 }
 
 func TestHealthcheck(t *testing.T) {
-	t.Setenv("WZAP_SERVICE_TOKEN", "token")
+	t.Setenv("WZAP_API_KEY", "api-key")
+	t.Setenv("WZAP_JWT_SECRET", "jwt-secret")
 	t.Setenv("WZAP_DATABASE_URL", "postgres://example/wzap")
 	t.Setenv("WZAP_NATS_URL", "nats://example:4222")
 

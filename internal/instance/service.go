@@ -11,9 +11,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"wzap/internal/auth"
 	"wzap/internal/model"
 	"wzap/internal/session"
 	"wzap/internal/storage"
+	"wzap/internal/webhook"
 )
 
 // Errors reported by the service and mapped to HTTP status codes by the
@@ -28,6 +30,22 @@ var (
 	// ErrAlreadyConnected reports that a pairing request hit an instance whose
 	// session is already connected.
 	ErrAlreadyConnected = errors.New("instance already connected")
+	// ErrOwnerRequired reports that Create received no owner. The handler
+	// always resolves the owner before calling, so this is a programmer
+	// error answered 500.
+	ErrOwnerRequired = errors.New("owner is required")
+	// ErrOwnerNotFound reports that the requested owner matches no user. The
+	// handler maps it to 422: creation-input validation.
+	ErrOwnerNotFound = errors.New("owner not found")
+	// ErrNoAdmin reports that no admin user exists to own an instance created
+	// without an explicit owner. It is only reachable pre-seed and the
+	// handler maps it to 500: server state, not client error.
+	ErrNoAdmin = errors.New("no admin user exists")
+	// ErrInvalidWebhook reports that a webhook configuration failed
+	// validation (non-HTTP(S) URL, HTTP outside loopback, or an unknown event
+	// type). The handler maps it to 422 and the failed write persists
+	// nothing.
+	ErrInvalidWebhook = errors.New("invalid webhook config")
 )
 
 // ConnectResult is the outcome of a pairing request: the resulting status and,
@@ -45,47 +63,144 @@ type MediaRemover interface {
 }
 
 // CreateInput is the payload accepted by Create. Name and ExternalRef are the
-// only fields the REST contract exposes.
+// fields the REST contract exposes; OwnerUserID is resolved by the handler
+// from the request scope and is required non-nil at this boundary. The webhook
+// fields are pointers so an absent field is distinct from an explicit value:
+// an absent URL stays unset, an absent enabled stays false, and absent events
+// default to every canonical type.
 type CreateInput struct {
-	Name        string
-	ExternalRef string
+	Name           string
+	ExternalRef    string
+	OwnerUserID    *uuid.UUID
+	WebhookURL     *string
+	WebhookEnabled *bool
+	WebhookEvents  *[]string
 }
 
 // UpdateInput is a partial update: nil fields keep their stored value, while an
-// explicit empty ExternalRef clears the reference.
+// explicit empty ExternalRef clears the reference. The webhook fields follow
+// the same rule: an absent URL, enabled, or events pointer leaves the stored
+// configuration untouched, while an explicit empty URL unsets it and an
+// explicit empty events list clears the subscription (delivering nothing).
 type UpdateInput struct {
-	Name        *string
-	ExternalRef *string
+	Name           *string
+	ExternalRef    *string
+	WebhookURL     *string
+	WebhookEnabled *bool
+	WebhookEvents  *[]string
 }
 
 // Service manages the lifecycle of WhatsApp instances over the instance
-// repository, the session manager and the media remover.
+// repository, the session manager, the media remover, the user repository
+// (owner validation and oldest-admin lookup) and the API key repository (hash
+// persist).
 type Service struct {
 	repo     storage.InstanceRepository
 	sessions session.Manager
 	media    MediaRemover
+	users    storage.UserRepository
+	keys     storage.APIKeyRepository
 }
 
 // NewService builds the service over its dependencies. media may be nil until
-// instance media exists (Task 16); Delete then skips media removal.
-func NewService(repo storage.InstanceRepository, sessions session.Manager, media MediaRemover) *Service {
-	return &Service{repo: repo, sessions: sessions, media: media}
+// instance media exists (Task 16); Delete then skips media removal. users and
+// keys are required for Create; a nil one fails Create with a 500-mapped
+// error instead of panicking.
+func NewService(repo storage.InstanceRepository, sessions session.Manager, media MediaRemover, users storage.UserRepository, keys storage.APIKeyRepository) *Service {
+	return &Service{repo: repo, sessions: sessions, media: media, users: users, keys: keys}
 }
 
-// Create registers a new instance in the disconnected state.
-func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instance, error) {
+// Create registers a new instance in the disconnected state owned by
+// input.OwnerUserID and emits its instance API key. The owner must resolve to
+// an existing user; only the key hash is persisted via the keys repository,
+// so the plaintext key exists in memory only and is returned here exactly
+// once — never in a column, log or error. When the key mint or the hash
+// persist fails after the row was inserted, the row is deleted again so a
+// client retry starts clean instead of colliding with the orphaned row.
+func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instance, string, error) {
+	if input.OwnerUserID == nil {
+		return nil, "", fmt.Errorf("create instance: %w", ErrOwnerRequired)
+	}
+	// The webhook configuration is pure input validation and runs before any
+	// database read or write, so a 422 never partially persists.
+	rawURL := ""
+	if input.WebhookURL != nil {
+		rawURL = *input.WebhookURL
+	}
+	webhookURL, webhookEvents, err := webhook.ValidateConfig(rawURL, input.WebhookEvents)
+	if err != nil {
+		return nil, "", fmt.Errorf("create instance: %w (%v)", ErrInvalidWebhook, err)
+	}
+	webhookEnabled := false
+	if input.WebhookEnabled != nil {
+		webhookEnabled = *input.WebhookEnabled
+	}
+	if s.users == nil {
+		return nil, "", fmt.Errorf("create instance: users repository is not configured")
+	}
+	if _, err := s.users.GetByID(ctx, *input.OwnerUserID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, "", fmt.Errorf("create instance: %w", ErrOwnerNotFound)
+		}
+		return nil, "", fmt.Errorf("create instance: get owner: %w", err)
+	}
+	if s.keys == nil {
+		return nil, "", fmt.Errorf("create instance: keys repository is not configured")
+	}
+
 	instance := model.Instance{
-		ID:          uuid.New(),
-		Name:        input.Name,
-		ExternalRef: input.ExternalRef,
-		Status:      string(session.StatusDisconnected),
+		ID:             uuid.New(),
+		Name:           input.Name,
+		ExternalRef:    input.ExternalRef,
+		Status:         string(session.StatusDisconnected),
+		OwnerUserID:    input.OwnerUserID,
+		WebhookURL:     webhookURL,
+		WebhookEnabled: webhookEnabled,
+		WebhookEvents:  webhookEvents,
 	}
 
 	created, err := s.repo.Create(ctx, instance)
 	if err != nil {
-		return nil, mapError("create instance", err)
+		return nil, "", mapError("create instance", err)
 	}
-	return created, nil
+
+	key, hash, err := auth.MintAPIKey()
+	if err != nil {
+		return nil, "", s.deleteCreated(ctx, created.ID, fmt.Errorf("mint api key: %w", err))
+	}
+	if err := s.keys.SetHash(ctx, created.ID, hash); err != nil {
+		return nil, "", s.deleteCreated(ctx, created.ID, fmt.Errorf("store key hash: %w", err))
+	}
+	return created, key, nil
+}
+
+// deleteCreated removes a just-inserted instance after a post-insert failure
+// (key mint or hash persist). A failed compensation is loud: the returned
+// error mentions both faults, mirroring the seed rollback.
+func (s *Service) deleteCreated(ctx context.Context, id uuid.UUID, cause error) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("create instance: %v; compensating instance delete also failed: %w", cause, err)
+	}
+	return fmt.Errorf("create instance: %w", cause)
+}
+
+// OldestAdmin returns the id of the admin user with the earliest created_at.
+// users.List arrives ordered by created_at, so the first role==admin row wins.
+// It reports ErrNoAdmin when no admin user exists.
+func (s *Service) OldestAdmin(ctx context.Context) (uuid.UUID, error) {
+	if s.users == nil {
+		return uuid.Nil, fmt.Errorf("resolve oldest admin: users repository is not configured")
+	}
+	users, err := s.users.List(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve oldest admin: %w", err)
+	}
+	for i := range users {
+		if users[i].Role == "admin" {
+			return users[i].ID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("resolve oldest admin: %w", ErrNoAdmin)
 }
 
 // Get returns the instance with the given id or ErrNotFound.
@@ -120,6 +235,26 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, input UpdateInput) (
 	}
 	if input.ExternalRef != nil {
 		instance.ExternalRef = *input.ExternalRef
+	}
+	// Only the webhook fields present in the patch are validated and applied;
+	// absent ones keep the stored configuration. Validation runs before the
+	// write, so a 422 keeps the previous configuration.
+	if input.WebhookURL != nil {
+		normalized, err := webhook.ValidateURL(*input.WebhookURL)
+		if err != nil {
+			return nil, fmt.Errorf("update instance: %w (%v)", ErrInvalidWebhook, err)
+		}
+		instance.WebhookURL = normalized
+	}
+	if input.WebhookEnabled != nil {
+		instance.WebhookEnabled = *input.WebhookEnabled
+	}
+	if input.WebhookEvents != nil {
+		normalized, err := webhook.ValidateEvents(*input.WebhookEvents)
+		if err != nil {
+			return nil, fmt.Errorf("update instance: %w (%v)", ErrInvalidWebhook, err)
+		}
+		instance.WebhookEvents = normalized
 	}
 
 	updated, err := s.repo.Update(ctx, *instance)
