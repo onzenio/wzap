@@ -22,15 +22,20 @@ type ReadyChecker interface {
 // Deps carries the dependencies consumed by HTTP handlers. It grows as later
 // tasks register handlers.
 type Deps struct {
-	ReadyChecker ReadyChecker
-	Instances    InstanceService
-	Numbers      NumberResolver
-	Messages     MessageService
-	Idempotency  storage.IdempotencyRepository
-	Media        MediaStore
-	Users        storage.UserRepository
-	Keys         storage.APIKeyRepository
-	JWTSecret    string
+	ReadyChecker      ReadyChecker
+	Instances         InstanceService
+	Numbers           NumberResolver
+	Messages          MessageService
+	Idempotency       storage.IdempotencyRepository
+	Media             MediaStore
+	Users             storage.UserRepository
+	Keys              storage.APIKeyRepository
+	JWTSecret         string
+	ChatwootConfigs   ChatwootConfigStore
+	Chatwoot          config.Chatwoot
+	PublicURL         string
+	ChatwootInbound   ChatwootInbound
+	ChatwootClientFor ChatwootClientFor
 }
 
 // New builds the HTTP server with the middleware chain, the exact public
@@ -76,11 +81,18 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /users/{id}", handleGetUser(deps.Users))
 	api.HandleFunc("DELETE /users/{id}", handleDeleteUser(deps.Users, deps.Keys))
 	api.HandleFunc("PATCH /users/{id}", handleUpdateUserQuota(deps.Users))
+	api.HandleFunc("PUT /instances/{id}/chatwoot", handleChatwootSet(deps.Instances, deps.ChatwootConfigs, deps.Chatwoot, publicURLForChatwoot(cfg, deps), deps.ChatwootClientFor))
+	api.HandleFunc("GET /instances/{id}/chatwoot", handleChatwootGet(deps.Instances, deps.ChatwootConfigs, deps.Chatwoot, publicURLForChatwoot(cfg, deps)))
 	// "/" is the least-specific outer pattern, so Authenticate runs before
 	// the api mux sees the request: an unknown path without credential
 	// answers 401 here, while the same path with a valid credential falls
 	// through to the enveloped 404 of envelopeFallback.
 	mux.Handle("/", Authenticate(cfg.APIKey, deps.Users, deps.Keys, deps.JWTSecret)(envelopeFallback(api)))
+
+	// The Chatwoot webhook is open by design (the secret is v2), so it
+	// mounts on the outer mux outside the Authenticate guard at its exact
+	// path. It is more specific than "/" above, so it wins for its route.
+	mux.HandleFunc("POST /chatwoot/webhook/{id}", handleChatwootWebhook(deps.Instances, deps.ChatwootInbound, deps.Chatwoot))
 
 	// The session endpoints authenticate with the cookie, never with the
 	// apikey header, so they mount on the outer mux outside the Authenticate
@@ -97,6 +109,15 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 		Handler:           RequestID(Logging(log)(Recover(log)(mux))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+}
+
+// publicURLForChatwoot prefers the explicit Deps override (tests) and falls
+// back to the configured public URL (production).
+func publicURLForChatwoot(cfg config.Config, deps Deps) string {
+	if deps.PublicURL != "" {
+		return deps.PublicURL
+	}
+	return cfg.PublicURL
 }
 
 // envelopeFallback turns the plain-text 404 and 405 responses of the API mux

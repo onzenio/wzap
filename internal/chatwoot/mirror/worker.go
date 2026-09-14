@@ -952,6 +952,15 @@ func (w *Worker) stampNotice(instanceID uuid.UUID, status string) {
 	w.notices[instanceID] = noticeStamp{status: status, at: time.Now().UTC()}
 }
 
+// Clear drops the cached connector stack of instanceID, forcing fresh inbox
+// and conversation resolution on the next event. It backs the inbound
+// clearcache operational command.
+func (w *Worker) Clear(instanceID uuid.UUID) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.runtimes, instanceID)
+}
+
 // storeCorrelation records the WA→Chatwoot correlation after a successful
 // Create. It preserves exactly-once-visible on redelivery: Put is an upsert,
 // so a Put failure after Create would otherwise Nak and recreate a second

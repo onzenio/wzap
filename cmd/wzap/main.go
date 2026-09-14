@@ -21,6 +21,7 @@ import (
 	"wzap/internal/chatwoot/client"
 	"wzap/internal/chatwoot/contacts"
 	"wzap/internal/chatwoot/conversations"
+	"wzap/internal/chatwoot/inbound"
 	"wzap/internal/chatwoot/mirror"
 	"wzap/internal/config"
 	"wzap/internal/events"
@@ -172,9 +173,14 @@ func serve() error {
 	// publishes, so there is no second relay. It is built after the session
 	// manager so pairing notices can fetch the live QR string at handle
 	// time through the session's in-memory pairing state.
+	//
+	// The config/correlation repositories are always wired (cheap pgx
+	// wrappers): the REST set/find and the open webhook need them to answer
+	// the global 400 gate and the disabled-with-empty-fields reads even
+	// when the mirror consumer stays down.
+	chatwootConfigs, chatwootMessages := postgres.NewChatwootRepositories(pool)
 	var mirrorWorker *mirror.Worker
 	if cfg.Chatwoot.Enabled {
-		chatwootConfigs, chatwootMessages := postgres.NewChatwootRepositories(pool)
 		clientFor := func(connector model.ChatwootConfig) mirror.ChatwootClient {
 			return client.New(connector.URL, connector.Token, connector.AccountID)
 		}
@@ -218,6 +224,36 @@ func serve() error {
 	numbers := message.NewJIDResolver(sessions, postgres.NewJIDCacheRepository(pool), log)
 	messages := message.NewService(instances, numbers, messageRepo)
 
+	// Chatwoot inbound (capability wzap-chatwoot-inbound): the open webhook
+	// reuses message.Service.Enqueue (text/media via media.Storage after
+	// downloading data_url; quoted via correlation; private-note on
+	// failure), the session fakes surface (DeleteMessage/MarkRead/PairPhone
+	// for reverse-delete/template/mark-read and init:<number>), and the
+	// per-instance Chatwoot API for notes and operational confirmations. It
+	// has no background worker: handling is synchronous in the webhook
+	// route, so the shutdown order (HTTP drain, then outbox, cleaner,
+	// webhook worker, chatwoot mirror, relay last) is preserved with the
+	// mirror stopping before the relay.
+	var chatwootCache inbound.CacheClearer
+	if mirrorWorker != nil {
+		chatwootCache = mirrorWorker
+	}
+	inboundHandler := inbound.New(inbound.Deps{
+		Configs:      chatwootConfigs,
+		Correlations: chatwootMessages,
+		Instances:    service,
+		Enqueuer:     messages,
+		Media:        mediaStorage,
+		Sessions:     sessions,
+		Downloader:   inbound.NewHTTPDownloader(cfg.MaxMediaBytes),
+		Cache:        chatwootCache,
+		Global:       cfg.Chatwoot,
+		Log:          log,
+		ClientFor: func(connector model.ChatwootConfig) inbound.ChatwootAPI {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		},
+	})
+
 	// Restore the persisted sessions before serving and before the outbox
 	// starts claiming messages. Per-instance failures are reflected in
 	// instances.status by the manager; only an aborted restore is reported
@@ -232,15 +268,22 @@ func serve() error {
 	outboxWorker := message.NewOutbox(messageRepo, sessions, webhookWriter, mediaStorage, log, cfg.OutboxWorkers, instancelock.New(), cfg.Humanize)
 
 	srv := httpapi.New(cfg, log, httpapi.Deps{
-		ReadyChecker: checker,
-		Instances:    service,
-		Numbers:      numbers,
-		Messages:     messages,
-		Idempotency:  idempotencyRepo,
-		Media:        mediaStorage,
-		Users:        users,
-		Keys:         keys,
-		JWTSecret:    cfg.JWTSecret,
+		ReadyChecker:    checker,
+		Instances:       service,
+		Numbers:         numbers,
+		Messages:        messages,
+		Idempotency:     idempotencyRepo,
+		Media:           mediaStorage,
+		Users:           users,
+		Keys:            keys,
+		JWTSecret:       cfg.JWTSecret,
+		ChatwootConfigs: chatwootConfigs,
+		Chatwoot:        cfg.Chatwoot,
+		PublicURL:       cfg.PublicURL,
+		ChatwootInbound: inboundHandler,
+		ChatwootClientFor: func(connector model.ChatwootConfig) httpapi.ChatwootInboxClient {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		},
 	})
 
 	// The workers do not derive from the signal context: SIGTERM must not stop

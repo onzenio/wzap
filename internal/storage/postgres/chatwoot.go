@@ -153,6 +153,32 @@ func (r *ChatwootMessageRepository) DeleteByInstance(ctx context.Context, instan
 	return tag.RowsAffected(), nil
 }
 
+// GetByChatwootID returns the correlation holding a Chatwoot message id or
+// storage.ErrNotFound. It backs the inbound quoted and reverse-delete
+// lookups without changing the storage interface.
+func (r *ChatwootMessageRepository) GetByChatwootID(ctx context.Context, instanceID uuid.UUID, chatwootID int64) (*model.ChatwootMessage, error) {
+	msg, err := scanChatwootMessage(r.pool.QueryRow(ctx,
+		`SELECT `+chatwootMessageColumns+` FROM chatwoot_messages WHERE instance_id = $1 AND chatwoot_message_id = $2 LIMIT 1`,
+		instanceID, chatwootID))
+	if err != nil {
+		return nil, mapChatwootError("get chatwoot message by chatwoot id", err)
+	}
+	return msg, nil
+}
+
+// LatestByConversation returns the newest correlation of a conversation or
+// storage.ErrNotFound. It backs the inbound MESSAGE_READ marking of the last
+// received message.
+func (r *ChatwootMessageRepository) LatestByConversation(ctx context.Context, instanceID uuid.UUID, conversationID int64) (*model.ChatwootMessage, error) {
+	msg, err := scanChatwootMessage(r.pool.QueryRow(ctx,
+		`SELECT `+chatwootMessageColumns+` FROM chatwoot_messages WHERE instance_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 1`,
+		instanceID, conversationID))
+	if err != nil {
+		return nil, mapChatwootError("get latest chatwoot message", err)
+	}
+	return msg, nil
+}
+
 func scanChatwootConfig(scanner rowScanner) (*model.ChatwootConfig, error) {
 	var cfg model.ChatwootConfig
 	if err := scanner.Scan(

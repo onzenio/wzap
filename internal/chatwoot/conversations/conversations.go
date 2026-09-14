@@ -209,6 +209,19 @@ func (r *Resolver) drop(key string) {
 	delete(r.cache, key)
 }
 
+// Clear drops every cached conversation of instanceID, so the clearcache
+// operational command forces fresh resolution on the next message.
+func (r *Resolver) Clear(instanceID uuid.UUID) {
+	prefix := instanceID.String() + "|"
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.cache {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			delete(r.cache, key)
+		}
+	}
+}
+
 // maxID returns the larger conversation id, treating 0 as absent.
 func maxID(a, b int64) int64 {
 	if b > a {
