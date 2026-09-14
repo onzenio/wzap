@@ -17,6 +17,10 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"wzap/internal/app"
+	"wzap/internal/chatwoot/client"
+	"wzap/internal/chatwoot/contacts"
+	"wzap/internal/chatwoot/conversations"
+	"wzap/internal/chatwoot/mirror"
 	"wzap/internal/config"
 	"wzap/internal/events"
 	"wzap/internal/httpapi"
@@ -24,6 +28,7 @@ import (
 	"wzap/internal/instancelock"
 	"wzap/internal/media"
 	"wzap/internal/message"
+	"wzap/internal/model"
 	"wzap/internal/session/whatsmeow"
 	"wzap/internal/storage/postgres"
 	"wzap/internal/version"
@@ -147,6 +152,34 @@ func serve() error {
 	// from the DB outbox, NOT through Writer, so there is no double delivery.
 	webhookWorker := webhook.NewWorker(instances, webhook.Keys, webhook.Deliver, cfg.MaxMediaBytes, log)
 	webhookWriter := webhookWorker.Fanout(eventWriter)
+
+	// Chatwoot mirror: a READ-only JetStream consumer (durable
+	// "wzap-chatwoot") that reflects inbound events into Chatwoot. It is
+	// only wired when the connector is globally enabled; per-instance
+	// switches are enforced by the worker itself. The consumer never
+	// publishes, so there is no second relay.
+	var mirrorWorker *mirror.Worker
+	if cfg.Chatwoot.Enabled {
+		chatwootConfigs, chatwootMessages := postgres.NewChatwootRepositories(pool)
+		mirrorWorker = mirror.New(mirror.Deps{
+			Conn:     nc,
+			Stream:   cfg.NATSStream,
+			Configs:  chatwootConfigs,
+			Messages: chatwootMessages,
+			Media:    mediaStorage,
+			Global:   cfg.Chatwoot,
+			ClientFor: func(connector model.ChatwootConfig) mirror.ChatwootClient {
+				return client.New(connector.URL, connector.Token, connector.AccountID)
+			},
+			ContactsFor: func(cli mirror.ChatwootClient, connector model.ChatwootConfig) mirror.ContactResolver {
+				return contacts.New(cli.(*client.Client), connector, log)
+			},
+			ConversationsFor: func(cli mirror.ChatwootClient, connector model.ChatwootConfig, inboxID int64) mirror.ConversationResolver {
+				return conversations.New(cli.(*client.Client), connector, inboxID, log)
+			},
+			Log: log,
+		})
+	}
 	runtime := app.NewRuntime(
 		instances, webhookWriter, message.NewReceipts(messageRepo, webhookWriter, cfg.MaxMediaBytes),
 		mediaStorage, cfg.PublicURL, cfg.MaxMediaBytes, log,
@@ -222,6 +255,16 @@ func serve() error {
 		webhookWorker.Run(webhookCtx)
 	}()
 
+	mirrorCtx, stopMirror := context.WithCancel(context.Background())
+	defer stopMirror()
+	mirrorDone := make(chan struct{})
+	go func() {
+		defer close(mirrorDone)
+		if mirrorWorker != nil {
+			mirrorWorker.Run(mirrorCtx)
+		}
+	}()
+
 	log.Info("wzap listening", "version", version.Version, "addr", cfg.HTTPAddr)
 
 	serveErr := make(chan error, 1)
@@ -239,6 +282,7 @@ func serve() error {
 			shutdownComponent{name: "outbox", stop: stopOutbox, done: outboxDone},
 			shutdownComponent{name: "media cleaner", stop: stopCleaner, done: cleanerDone},
 			shutdownComponent{name: "webhook worker", stop: stopWebhook, done: webhookDone},
+			shutdownComponent{name: "chatwoot mirror", stop: stopMirror, done: mirrorDone},
 			shutdownComponent{name: "event relay", stop: stopRelay, done: relayDone},
 		)
 		return fmt.Errorf("serve http: %w", err)
@@ -263,6 +307,7 @@ func serve() error {
 		shutdownComponent{name: "outbox", stop: stopOutbox, done: outboxDone},
 		shutdownComponent{name: "media cleaner", stop: stopCleaner, done: cleanerDone},
 		shutdownComponent{name: "webhook worker", stop: stopWebhook, done: webhookDone},
+		shutdownComponent{name: "chatwoot mirror", stop: stopMirror, done: mirrorDone},
 		shutdownComponent{name: "event relay", stop: stopRelay, done: relayDone},
 	)
 
