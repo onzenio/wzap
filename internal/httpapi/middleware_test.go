@@ -274,6 +274,14 @@ func (f *fakeAPIKeyRepository) SetHash(_ context.Context, instanceID uuid.UUID, 
 	if f.byHash == nil {
 		f.byHash = map[string]uuid.UUID{}
 	}
+	// The repository models the single api_key_hash column: storing a hash
+	// replaces the prior one, so earlier hashes of the instance stop
+	// resolving.
+	for h, id := range f.byHash {
+		if id == instanceID {
+			delete(f.byHash, h)
+		}
+	}
 	f.byHash[hash] = instanceID
 	return nil
 }

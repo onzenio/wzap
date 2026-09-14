@@ -57,6 +57,8 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /instances/{id}", handleGetInstance(deps.Instances))
 	api.HandleFunc("PATCH /instances/{id}", handleUpdateInstance(deps.Instances))
 	api.HandleFunc("DELETE /instances/{id}", handleDeleteInstance(deps.Instances))
+	api.HandleFunc("POST /instances/{id}/apikey/rotate", handleRotateAPIKey(deps.Instances, deps.Keys))
+	api.HandleFunc("DELETE /instances/{id}/apikey", handleRevokeAPIKey(deps.Instances, deps.Keys))
 	api.HandleFunc("POST /instances/{id}/connect", handleConnectInstance(deps.Instances))
 	api.HandleFunc("POST /instances/{id}/disconnect", handleDisconnectInstance(deps.Instances))
 	api.HandleFunc("GET /instances/{id}/qr", handleQRInstance(deps.Instances))
