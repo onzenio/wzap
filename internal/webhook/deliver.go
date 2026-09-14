@@ -73,7 +73,17 @@ func CutRawForLimit(raw []byte, limitBytes int64) (trimmed []byte, cut bool) {
 		return raw, false
 	}
 	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
+	// UseNumber keeps every numeric literal verbatim through the
+	// re-marshal: ids and timestamps beyond float64 precision must survive
+	// the walk bit-for-bit. The trailing decode keeps Unmarshal's strictness
+	// (no trailing data after the single JSON value).
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return raw, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return raw, false
 	}
 	trimmedValue, cut := cutValue(value, limitBytes)

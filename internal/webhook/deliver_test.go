@@ -115,6 +115,22 @@ func TestCutRawForLimit(t *testing.T) {
 			},
 		},
 		{
+			name:    "large integers preserved exactly",
+			raw:     `{"id":9007199254740993,"nested":{"ts":1684763096123456789}}`,
+			limit:   16,
+			wantCut: false,
+			check: func(t *testing.T, out []byte) {
+				t.Helper()
+				// Beyond float64 precision: the re-marshaled body must keep
+				// the integer literals verbatim, never rounded.
+				for _, want := range []string{`"id":9007199254740993`, `"ts":1684763096123456789`} {
+					if !strings.Contains(string(out), want) {
+						t.Errorf("out = %s, want it to contain %s verbatim", out, want)
+					}
+				}
+			},
+		},
+		{
 			name:    "marker records byte length",
 			raw:     `{"v":"é"}`,
 			limit:   1,
