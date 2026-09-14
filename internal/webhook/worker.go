@@ -29,6 +29,10 @@ const (
 	webhookBackoffBase = time.Second
 	// webhookBackoffMax caps every retry sleep.
 	webhookBackoffMax = 5 * time.Minute
+	// MaxInflight caps concurrent deliveries: cada handle segura um POST de
+	// até 5s contra endpoint externo, então 16 concorrentes limitam FDs e
+	// memória sob burst sem serializar o retry.
+	MaxInflight = 16
 )
 
 // DeliverFunc delivers payload to url with the vigente instance key. It
@@ -68,6 +72,10 @@ type Worker struct {
 
 	queue   chan job
 	dropped atomic.Int64
+	// sem capa deliveries concorrentes (MaxInflight). O Run adquire antes
+	// de destacar o handle e libera no fim, então a fila continua
+	// bufferizando enquanto o paralelismo externo fica limitado.
+	sem chan struct{}
 }
 
 // NewWorker builds a webhook worker over the instance loader, the process
@@ -92,6 +100,7 @@ func NewWorker(loader InstanceLoader, keys *KeyCache, deliver DeliverFunc, maxMe
 		log:           log,
 		Sleep:         sleepContext,
 		queue:         make(chan job, BufferSize),
+		sem:           make(chan struct{}, MaxInflight),
 	}
 }
 
@@ -138,18 +147,32 @@ func (w *Worker) dispatch(env events.Envelope) {
 }
 
 // Run dequeues jobs until ctx is cancelled. Every job is handled in its OWN
-// goroutine, so one failing delivery never blocks the following ones. On
-// cancel the pending queue is dropped with a count log — NO drain: webhooks
-// are best-effort and the shared shutdown budget belongs to the relay, while
-// the NATS outbox remains the source of truth.
+// goroutine, so one failing delivery never blocks the following ones, capped
+// at MaxInflight concurrent handles by the semaphore. On cancel the pending
+// queue is dropped with a count log — NO drain: webhooks are best-effort and
+// the shared shutdown budget belongs to the relay, while the NATS outbox
+// remains the source of truth.
 func (w *Worker) Run(ctx context.Context) {
+	sem := w.sem
+	if sem == nil {
+		sem = make(chan struct{}, MaxInflight)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			w.log.InfoContext(ctx, "webhook worker stopped", "pending", len(w.queue))
 			return
 		case j := <-w.queue:
-			go w.handle(ctx, j)
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				w.log.InfoContext(ctx, "webhook worker stopped", "pending", len(w.queue)+1)
+				return
+			}
+			go func(job job) {
+				defer func() { <-sem }()
+				w.handle(ctx, job)
+			}(j)
 		}
 	}
 }

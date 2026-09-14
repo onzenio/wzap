@@ -222,6 +222,9 @@ type Worker struct {
 	seen     map[uuid.UUID]time.Time
 	notices  map[uuid.UUID]noticeStamp
 	imported map[uuid.UUID]struct{}
+	// imports rastreia os auto-imports destacados: o shutdown espera via
+	// Wait, limitado pelo deadline compartilhado em serve().
+	imports sync.WaitGroup
 }
 
 // instanceRuntime caches the resolved Chatwoot stack of one instance.
@@ -619,7 +622,7 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 // The import runs detached with its own deadline: a stuck or failing import
 // only warns, it never blocks or fails the connection handling. A
 // non-connected notice (HandleConnection) re-arms the trigger for the next
-// pairing.
+// pairing. Every fire is tracked in imports so Run/Wait esperam o shutdown.
 func (w *Worker) maybeAutoImport(instanceID uuid.UUID) {
 	if w.importTrigger == nil {
 		return
@@ -633,13 +636,21 @@ func (w *Worker) maybeAutoImport(instanceID uuid.UUID) {
 	trigger := w.importTrigger
 	w.mu.Unlock()
 
+	w.imports.Add(1)
 	go func() {
+		defer w.imports.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := trigger(ctx, instanceID); err != nil {
 			w.log.Warn("chatwoot auto import failed", "instance_id", instanceID, "error", err)
 		}
 	}()
+}
+
+// Wait blocks until every detached auto-import finished. Run chama no exit;
+// serve() conta com o deadline compartilhado para limitar a espera.
+func (w *Worker) Wait() {
+	w.imports.Wait()
 }
 
 // NotifyOperational posts text to the operational conversation in pt-BR. The
@@ -711,6 +722,7 @@ func (w *Worker) pairingQRImage(ctx context.Context, log *slog.Logger, instanceI
 // republished. A disabled connector or a missing connection returns without
 // consuming; a broker outage retries until the context ends.
 func (w *Worker) Run(ctx context.Context) {
+	defer w.Wait()
 	if !w.global.Enabled {
 		w.log.Info("chatwoot mirror disabled, consumer not started")
 		return
