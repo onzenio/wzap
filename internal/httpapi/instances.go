@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wzap/internal/auth"
 	"wzap/internal/instance"
 	"wzap/internal/model"
 )
@@ -71,9 +72,16 @@ type updateInstanceRequest struct {
 	ExternalRef *string `json:"external_ref"`
 }
 
-// handleCreateInstance registers an instance and answers 201 with it.
+// handleCreateInstance registers an instance and answers 201 with it. The
+// collection is outside every instance key scope, so instance credentials
+// answer 403 before the body is read.
 func handleCreateInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := authorizeCollection(r); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+
 		var request createInstanceRequest
 		if err := decodeJSONBody(w, r, &request); err != nil {
 			writeJSONBodyError(w, r, err)
@@ -92,14 +100,27 @@ func handleCreateInstance(instances InstanceService) http.HandlerFunc {
 	}
 }
 
-// handleListInstances answers one page of instances with its next cursor.
+// handleListInstances answers one page of instances with its next cursor. An
+// instance key owns no collection view and answers 403; a user session sees
+// exactly its own rows while the global scope and admin sessions see all.
 func handleListInstances(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := authorizeCollection(r); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+
 		items, next, err := instances.List(r.Context(),
 			parseInstancesLimit(r.URL.Query().Get("limit")), r.URL.Query().Get("cursor"))
 		if err != nil {
 			writeInstanceError(w, r, err)
 			return
+		}
+
+		if scope, ok := auth.ScopeFromContext(r.Context()); ok {
+			items = filterInstancesByOwner(scope, items)
+		} else {
+			items = nil
 		}
 
 		response := instanceListResponse{Items: make([]instanceResponse, 0, len(items)), NextCursor: next}
@@ -110,7 +131,8 @@ func handleListInstances(instances InstanceService) http.HandlerFunc {
 	}
 }
 
-// handleGetInstance answers one instance by id.
+// handleGetInstance answers one instance by id. The target loads first so a
+// missing id answers 404 before the ownership check can deny with 403.
 func handleGetInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
@@ -123,16 +145,31 @@ func handleGetInstance(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
+		if err := authorizeInstance(r, found); err != nil {
+			writeForbidden(w, r)
+			return
+		}
 		JSON(w, http.StatusOK, newInstanceResponse(found))
 	}
 }
 
 // handleUpdateInstance applies a partial update and answers 200 with the stored
-// instance.
+// instance. It loads the target first (404) and authorizes (403) before
+// reading the body or writing anything.
 func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -154,11 +191,22 @@ func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 	}
 }
 
-// handleDeleteInstance removes an instance and answers 204.
+// handleDeleteInstance removes an instance and answers 204. It loads the
+// target first (404) and authorizes (403) before removing anything.
 func handleDeleteInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -232,9 +280,12 @@ func newInstanceResponse(inst *model.Instance) instanceResponse {
 }
 
 // writeInstanceError maps a service error to its HTTP status and error
-// envelope. Unknown failures answer 500 without leaking their cause.
+// envelope. Scope denials answer 403; unknown failures answer 500 without
+// leaking their cause.
 func writeInstanceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrForbidden):
+		Error(w, r, http.StatusForbidden, "forbidden", "forbidden")
 	case errors.Is(err, instance.ErrNotFound):
 		Error(w, r, http.StatusNotFound, "not_found", "instance not found")
 	case errors.Is(err, instance.ErrExternalRefTaken):

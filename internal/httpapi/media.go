@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wzap/internal/auth"
 	"wzap/internal/media"
 	"wzap/internal/model"
 )
@@ -26,8 +27,10 @@ type MediaStore interface {
 }
 
 // handleGetMedia streams one media content. The success body is the raw
-// content, not the JSON envelope used by the other endpoints.
-func handleGetMedia(store MediaStore) http.HandlerFunc {
+// content, not the JSON envelope used by the other endpoints. The media loads
+// first (missing or expired → 404) and the owning instance authorizes next
+// (403) under the instance-scoped rule.
+func handleGetMedia(instances InstanceService, store MediaStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.Parse(r.PathValue("id"))
 		if err != nil {
@@ -41,6 +44,16 @@ func handleGetMedia(store MediaStore) http.HandlerFunc {
 			return
 		}
 		defer func() { _ = body.Close() }()
+
+		owner, err := instances.Get(r.Context(), record.InstanceID)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, owner); err != nil {
+			writeForbidden(w, r)
+			return
+		}
 
 		w.Header().Set("Content-Type", record.Mimetype)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -87,8 +100,11 @@ func sanitizeMediaFilename(name string) string {
 
 // writeMediaError maps a media storage error to its HTTP status and error
 // envelope. Unknown and expired media are indistinguishable to the client.
+// Scope denials answer 403.
 func writeMediaError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrForbidden):
+		Error(w, r, http.StatusForbidden, "forbidden", "forbidden")
 	case errors.Is(err, media.ErrNotFound), errors.Is(err, media.ErrExpired):
 		Error(w, r, http.StatusNotFound, "not_found", "media not found")
 	default:

@@ -92,7 +92,9 @@ func messagesServer(t *testing.T, svc MessageService, repo storage.IdempotencyRe
 }
 
 // mediaUploadServer builds the server under test with the given message
-// service, media store and idempotency repository.
+// service, media store and idempotency repository. Instances default to a
+// fake answering every id so global-scope tests exercise the operation
+// behind the ownership gate.
 func mediaUploadServer(t *testing.T, svc MessageService, store MediaStore, repo storage.IdempotencyRepository) *http.Server {
 	t.Helper()
 	if svc == nil {
@@ -108,6 +110,7 @@ func mediaUploadServer(t *testing.T, svc MessageService, store MediaStore, repo 
 		discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
+			Instances:    &fakeInstanceService{},
 			Messages:     svc,
 			Media:        store,
 			Idempotency:  repo,

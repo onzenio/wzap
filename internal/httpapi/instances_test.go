@@ -50,14 +50,15 @@ func (f *fakeInstanceService) Create(ctx context.Context, input instance.CreateI
 	return &model.Instance{ID: uuid.New(), Name: input.Name, ExternalRef: input.ExternalRef, Status: "disconnected"}, nil
 }
 
-// Get records the id and returns the configured instance, defaulting to
-// instance.ErrNotFound.
+// Get records the id and returns the configured instance, defaulting to a
+// stored disconnected instance with the requested id so global-scope tests
+// exercise the operation behind the ownership gate.
 func (f *fakeInstanceService) Get(ctx context.Context, id uuid.UUID) (*model.Instance, error) {
 	f.getIDs = append(f.getIDs, id)
 	if f.getFn != nil {
 		return f.getFn(ctx, id)
 	}
-	return nil, instance.ErrNotFound
+	return &model.Instance{ID: id, Name: "loja", Status: "disconnected"}, nil
 }
 
 // List records the pagination and returns the configured page, defaulting to an

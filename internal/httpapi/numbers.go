@@ -55,8 +55,16 @@ func handleCheckNumber(instances InstanceService, numbers NumberResolver) http.H
 			return
 		}
 
-		if _, err := instances.Get(r.Context(), id); err != nil {
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
 			writeInstanceError(w, r, err)
+			return
+		}
+
+		// The target loads first (404 above); the ownership check denies with
+		// 403 before the number is resolved.
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 

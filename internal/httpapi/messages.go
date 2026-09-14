@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wzap/internal/auth"
 	"wzap/internal/media"
 	"wzap/internal/message"
 	"wzap/internal/model"
@@ -92,11 +93,23 @@ type sendContactRequest struct {
 	VCard       string `json:"vcard"`
 }
 
-// handleSendText accepts a text message and answers 202 with its id.
-func handleSendText(messages MessageService) http.HandlerFunc {
+// handleSendText accepts a text message and answers 202 with its id. It loads
+// the target instance first (404) and authorizes (403) before reading the
+// body or enqueueing anything.
+func handleSendText(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -120,10 +133,22 @@ func handleSendText(messages MessageService) http.HandlerFunc {
 }
 
 // handleSendLocation accepts a location message and answers 202 with its id.
-func handleSendLocation(messages MessageService) http.HandlerFunc {
+// It loads the target instance first (404) and authorizes (403) before
+// reading the body or enqueueing anything.
+func handleSendLocation(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -151,11 +176,23 @@ func handleSendLocation(messages MessageService) http.HandlerFunc {
 	}
 }
 
-// handleSendContact accepts a contact message and answers 202 with its id.
-func handleSendContact(messages MessageService) http.HandlerFunc {
+// handleSendContact accepts a contact message and answers 202 with its id. It
+// loads the target instance first (404) and authorizes (403) before reading
+// the body or enqueueing anything.
+func handleSendContact(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -182,11 +219,22 @@ func handleSendContact(messages MessageService) http.HandlerFunc {
 // handleSendMedia accepts a multipart media upload, stores the file and
 // enqueues a media message referencing it. The declared type must be one of
 // the outbound kinds and must match the uploaded content type; invalid content
-// answers 422 before the media is stored or the message enqueued.
-func handleSendMedia(messages MessageService, mediaStore MediaStore, maxBytes int64) http.HandlerFunc {
+// answers 422 before the media is stored or the message enqueued. It loads the
+// target instance first (404) and authorizes (403) before reading the upload.
+func handleSendMedia(instances InstanceService, messages MessageService, mediaStore MediaStore, maxBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		target, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, target); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -336,11 +384,23 @@ func writeMediaUploadError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// handleGetMessage answers 200 with one message of the instance.
-func handleGetMessage(messages MessageService) http.HandlerFunc {
+// handleGetMessage answers 200 with one message of the instance. It loads the
+// target instance first (404) and authorizes (403) before looking the message
+// up.
+func handleGetMessage(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -359,11 +419,22 @@ func handleGetMessage(messages MessageService) http.HandlerFunc {
 	}
 }
 
-// handleListMessages answers one page of messages with its next cursor.
-func handleListMessages(messages MessageService) http.HandlerFunc {
+// handleListMessages answers one page of messages with its next cursor. It
+// loads the target instance first (404) and authorizes (403) before listing.
+func handleListMessages(instances InstanceService, messages MessageService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -411,9 +482,12 @@ func newMessageResponse(msg *model.OutboundMessage) messageResponse {
 }
 
 // writeMessageError maps a message service error to its HTTP status and error
-// envelope. Unknown failures answer 500 without leaking their cause.
+// envelope. Scope denials answer 403; unknown failures answer 500 without
+// leaking their cause.
 func writeMessageError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrForbidden):
+		Error(w, r, http.StatusForbidden, "forbidden", "forbidden")
 	case errors.Is(err, message.ErrInstanceNotFound):
 		Error(w, r, http.StatusNotFound, "not_found", "instance not found")
 	case errors.Is(err, message.ErrMessageNotFound):

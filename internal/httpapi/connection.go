@@ -25,11 +25,22 @@ type statusResponse struct {
 
 // handleConnectInstance starts pairing and answers 200 with the QR code and its
 // validity, or with the status and no QR when the instance is already
-// connected.
+// connected. It loads the target first (404) and authorizes (403) before
+// touching the session.
 func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -43,11 +54,22 @@ func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 }
 
 // handleQRInstance answers 200 with the current pairing QR of an instance, or
-// 409 when its session is already connected.
+// 409 when its session is already connected. It loads the target first (404)
+// and authorizes (403) before touching the session.
 func handleQRInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 
@@ -73,6 +95,10 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
+		if err := authorizeInstance(r, found); err != nil {
+			writeForbidden(w, r)
+			return
+		}
 		JSON(w, http.StatusOK, statusResponse{
 			Status:          found.Status,
 			WhatsAppJID:     found.WhatsAppJID,
@@ -83,11 +109,22 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 }
 
 // handleDisconnectInstance ends the session of an instance, clearing its
-// paired identity and connection state, and answers 204.
+// paired identity and connection state, and answers 204. It loads the target
+// first (404) and authorizes (403) before touching the session.
 func handleDisconnectInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
 			return
 		}
 

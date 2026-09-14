@@ -71,6 +71,8 @@ func (f *fakeMediaStore) Save(
 }
 
 // mediaServer builds the server under test with the given media store.
+// Instances default to a fake answering every id so global-scope tests
+// exercise the download behind the ownership gate.
 func mediaServer(t *testing.T, store MediaStore) *http.Server {
 	t.Helper()
 	if store == nil {
@@ -79,6 +81,7 @@ func mediaServer(t *testing.T, store MediaStore) *http.Server {
 	return New(config.Config{HTTPAddr: "127.0.0.1:0", APIKey: testToken}, discardLogger(),
 		Deps{
 			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
+			Instances:    &fakeInstanceService{},
 			Media:        store,
 		})
 }
