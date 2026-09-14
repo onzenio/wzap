@@ -149,7 +149,7 @@ func serve() error {
 	}
 	defer func() { _ = sessions.Close() }()
 
-	service := instance.NewService(instances, sessions, mediaStorage)
+	service := instance.NewService(instances, sessions, mediaStorage, users, keys)
 	numbers := message.NewJIDResolver(sessions, postgres.NewJIDCacheRepository(pool), log)
 	messages := message.NewService(instances, numbers, messageRepo)
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"wzap/internal/auth"
 	"wzap/internal/model"
 	"wzap/internal/session"
 	"wzap/internal/storage"
@@ -28,6 +29,17 @@ var (
 	// ErrAlreadyConnected reports that a pairing request hit an instance whose
 	// session is already connected.
 	ErrAlreadyConnected = errors.New("instance already connected")
+	// ErrOwnerRequired reports that Create received no owner. The handler
+	// always resolves the owner before calling, so this is a programmer
+	// error answered 500.
+	ErrOwnerRequired = errors.New("owner is required")
+	// ErrOwnerNotFound reports that the requested owner matches no user. The
+	// handler maps it to 422: creation-input validation.
+	ErrOwnerNotFound = errors.New("owner not found")
+	// ErrNoAdmin reports that no admin user exists to own an instance created
+	// without an explicit owner. It is only reachable pre-seed and the
+	// handler maps it to 500: server state, not client error.
+	ErrNoAdmin = errors.New("no admin user exists")
 )
 
 // ConnectResult is the outcome of a pairing request: the resulting status and,
@@ -45,10 +57,12 @@ type MediaRemover interface {
 }
 
 // CreateInput is the payload accepted by Create. Name and ExternalRef are the
-// only fields the REST contract exposes.
+// fields the REST contract exposes; OwnerUserID is resolved by the handler
+// from the request scope and is required non-nil at this boundary.
 type CreateInput struct {
 	Name        string
 	ExternalRef string
+	OwnerUserID *uuid.UUID
 }
 
 // UpdateInput is a partial update: nil fields keep their stored value, while an
@@ -59,33 +73,87 @@ type UpdateInput struct {
 }
 
 // Service manages the lifecycle of WhatsApp instances over the instance
-// repository, the session manager and the media remover.
+// repository, the session manager, the media remover, the user repository
+// (owner validation and oldest-admin lookup) and the API key repository (hash
+// persist).
 type Service struct {
 	repo     storage.InstanceRepository
 	sessions session.Manager
 	media    MediaRemover
+	users    storage.UserRepository
+	keys     storage.APIKeyRepository
 }
 
 // NewService builds the service over its dependencies. media may be nil until
-// instance media exists (Task 16); Delete then skips media removal.
-func NewService(repo storage.InstanceRepository, sessions session.Manager, media MediaRemover) *Service {
-	return &Service{repo: repo, sessions: sessions, media: media}
+// instance media exists (Task 16); Delete then skips media removal. users and
+// keys are required for Create; a nil one fails Create with a 500-mapped
+// error instead of panicking.
+func NewService(repo storage.InstanceRepository, sessions session.Manager, media MediaRemover, users storage.UserRepository, keys storage.APIKeyRepository) *Service {
+	return &Service{repo: repo, sessions: sessions, media: media, users: users, keys: keys}
 }
 
-// Create registers a new instance in the disconnected state.
-func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instance, error) {
+// Create registers a new instance in the disconnected state owned by
+// input.OwnerUserID and emits its instance API key. The owner must resolve to
+// an existing user; only the key hash is persisted via the keys repository,
+// so the plaintext key exists in memory only and is returned here exactly
+// once — never in a column, log or error.
+func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instance, string, error) {
+	if input.OwnerUserID == nil {
+		return nil, "", fmt.Errorf("create instance: %w", ErrOwnerRequired)
+	}
+	if s.users == nil {
+		return nil, "", fmt.Errorf("create instance: users repository is not configured")
+	}
+	if _, err := s.users.GetByID(ctx, *input.OwnerUserID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, "", fmt.Errorf("create instance: %w", ErrOwnerNotFound)
+		}
+		return nil, "", fmt.Errorf("create instance: get owner: %w", err)
+	}
+
 	instance := model.Instance{
 		ID:          uuid.New(),
 		Name:        input.Name,
 		ExternalRef: input.ExternalRef,
 		Status:      string(session.StatusDisconnected),
+		OwnerUserID: input.OwnerUserID,
 	}
 
 	created, err := s.repo.Create(ctx, instance)
 	if err != nil {
-		return nil, mapError("create instance", err)
+		return nil, "", mapError("create instance", err)
 	}
-	return created, nil
+
+	key, hash, err := auth.MintAPIKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("create instance: %w", err)
+	}
+	if s.keys == nil {
+		return nil, "", fmt.Errorf("create instance: keys repository is not configured")
+	}
+	if err := s.keys.SetHash(ctx, created.ID, hash); err != nil {
+		return nil, "", fmt.Errorf("create instance: store key hash: %w", err)
+	}
+	return created, key, nil
+}
+
+// OldestAdmin returns the id of the admin user with the earliest created_at.
+// users.List arrives ordered by created_at, so the first role==admin row wins.
+// It reports ErrNoAdmin when no admin user exists.
+func (s *Service) OldestAdmin(ctx context.Context) (uuid.UUID, error) {
+	if s.users == nil {
+		return uuid.Nil, fmt.Errorf("resolve oldest admin: users repository is not configured")
+	}
+	users, err := s.users.List(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve oldest admin: %w", err)
+	}
+	for i := range users {
+		if users[i].Role == "admin" {
+			return users[i].ID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("resolve oldest admin: %w", ErrNoAdmin)
 }
 
 // Get returns the instance with the given id or ErrNotFound.

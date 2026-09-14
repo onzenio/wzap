@@ -26,7 +26,10 @@ const (
 
 // InstanceService is the instance management contract consumed by the handlers.
 type InstanceService interface {
-	Create(ctx context.Context, input instance.CreateInput) (*model.Instance, error)
+	Create(ctx context.Context, input instance.CreateInput) (*model.Instance, string, error)
+	// OldestAdmin resolves the owner of an instance created by the global key
+	// or an admin session without an explicit owner.
+	OldestAdmin(ctx context.Context) (uuid.UUID, error)
 	Get(ctx context.Context, id uuid.UUID) (*model.Instance, error)
 	List(ctx context.Context, limit int, cursor string) ([]model.Instance, string, error)
 	Update(ctx context.Context, id uuid.UUID, input instance.UpdateInput) (*model.Instance, error)
@@ -40,11 +43,14 @@ type InstanceService interface {
 // drift at build time.
 var _ InstanceService = (*instance.Service)(nil)
 
-// instanceResponse is the JSON representation of an instance.
+// instanceResponse is the JSON representation of an instance. It carries the
+// owner on every read but never the instance API key: the key is returned in
+// clear exactly once by the create response below.
 type instanceResponse struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
 	ExternalRef     string     `json:"external_ref"`
+	OwnerUserID     *uuid.UUID `json:"owner_user_id"`
 	Status          string     `json:"status"`
 	WhatsAppJID     string     `json:"whatsapp_jid"`
 	LastError       string     `json:"last_error"`
@@ -53,16 +59,26 @@ type instanceResponse struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+// createInstanceResponse is the 201 answer to a creation: the instance with
+// its one-time plaintext key. No other route returns this shape.
+type createInstanceResponse struct {
+	instanceResponse
+	InstanceAPIKey string `json:"instance_api_key"`
+}
+
 // instanceListResponse is the JSON representation of an instance page.
 type instanceListResponse struct {
 	Items      []instanceResponse `json:"items"`
 	NextCursor string             `json:"next_cursor"`
 }
 
-// createInstanceRequest is the POST /instances payload.
+// createInstanceRequest is the POST /instances payload. OwnerUserID is a
+// pointer so an absent field is distinct from an explicit value: only the
+// global scope and admin sessions may send it.
 type createInstanceRequest struct {
-	Name        string `json:"name"`
-	ExternalRef string `json:"external_ref"`
+	Name        string  `json:"name"`
+	ExternalRef string  `json:"external_ref"`
+	OwnerUserID *string `json:"owner_user_id"`
 }
 
 // updateInstanceRequest uses pointers so an omitted field keeps its stored
@@ -72,9 +88,14 @@ type updateInstanceRequest struct {
 	ExternalRef *string `json:"external_ref"`
 }
 
-// handleCreateInstance registers an instance and answers 201 with it. The
-// collection is outside every instance key scope, so instance credentials
-// answer 403 before the body is read.
+// handleCreateInstance registers an instance, assigns its owner and answers
+// 201 with the instance plus its one-time plaintext key. The collection is
+// outside every instance key scope, so instance credentials answer 403 before
+// the body is read. Owner resolution is by scope: a user session always owns
+// what it creates (sending owner_user_id is an admin/global privilege and
+// answers 403); the global scope and admin sessions create for the requested
+// owner_user_id when given and for the oldest admin otherwise (500 when no
+// admin exists). An override matching no user answers 422.
 func handleCreateInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := authorizeCollection(r); err != nil {
@@ -88,15 +109,54 @@ func handleCreateInstance(instances InstanceService) http.HandlerFunc {
 			return
 		}
 
-		created, err := instances.Create(r.Context(), instance.CreateInput{
+		scope, ok := auth.ScopeFromContext(r.Context())
+		if !ok {
+			writeForbidden(w, r)
+			return
+		}
+
+		var owner uuid.UUID
+		if err := auth.RequireRole(scope, "admin"); err == nil {
+			if request.OwnerUserID != nil {
+				id, err := uuid.Parse(*request.OwnerUserID)
+				if err != nil {
+					Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "invalid owner_user_id")
+					return
+				}
+				owner = id
+			} else {
+				admin, err := instances.OldestAdmin(r.Context())
+				if err != nil {
+					if errors.Is(err, instance.ErrNoAdmin) {
+						Error(w, r, http.StatusInternalServerError, "internal_error", "no admin user exists")
+						return
+					}
+					Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+					return
+				}
+				owner = admin
+			}
+		} else if scope.Kind == auth.ScopeUser {
+			if request.OwnerUserID != nil {
+				writeForbidden(w, r)
+				return
+			}
+			owner = scope.UserID
+		} else {
+			writeForbidden(w, r)
+			return
+		}
+
+		created, key, err := instances.Create(r.Context(), instance.CreateInput{
 			Name:        request.Name,
 			ExternalRef: request.ExternalRef,
+			OwnerUserID: &owner,
 		})
 		if err != nil {
 			writeInstanceError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusCreated, newInstanceResponse(created))
+		JSON(w, http.StatusCreated, newCreateInstanceResponse(created, key))
 	}
 }
 
@@ -270,6 +330,7 @@ func newInstanceResponse(inst *model.Instance) instanceResponse {
 		ID:              inst.ID.String(),
 		Name:            inst.Name,
 		ExternalRef:     inst.ExternalRef,
+		OwnerUserID:     inst.OwnerUserID,
 		Status:          inst.Status,
 		WhatsAppJID:     inst.WhatsAppJID,
 		LastError:       inst.LastError,
@@ -279,9 +340,19 @@ func newInstanceResponse(inst *model.Instance) instanceResponse {
 	}
 }
 
+// newCreateInstanceResponse maps a created instance and its one-time plaintext
+// key to the 201 body. The key travels in this response only.
+func newCreateInstanceResponse(inst *model.Instance, key string) createInstanceResponse {
+	return createInstanceResponse{
+		instanceResponse: newInstanceResponse(inst),
+		InstanceAPIKey:   key,
+	}
+}
+
 // writeInstanceError maps a service error to its HTTP status and error
-// envelope. Scope denials answer 403; unknown failures answer 500 without
-// leaking their cause.
+// envelope. Scope denials answer 403, unknown owner overrides answer 422, a
+// missing oldest admin answers 500 with a clear server-state message; unknown
+// failures answer 500 without leaking their cause.
 func writeInstanceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, auth.ErrForbidden):
@@ -294,6 +365,10 @@ func writeInstanceError(w http.ResponseWriter, r *http.Request, err error) {
 		Error(w, r, http.StatusBadRequest, "invalid_request", "invalid cursor")
 	case errors.Is(err, instance.ErrAlreadyConnected):
 		Error(w, r, http.StatusConflict, "conflict", "instance already connected")
+	case errors.Is(err, instance.ErrOwnerNotFound):
+		Error(w, r, http.StatusUnprocessableEntity, "unprocessable_entity", "unknown owner")
+	case errors.Is(err, instance.ErrNoAdmin):
+		Error(w, r, http.StatusInternalServerError, "internal_error", "no admin user exists")
 	default:
 		Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 	}

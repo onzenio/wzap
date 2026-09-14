@@ -20,14 +20,15 @@ import (
 // configure each outcome and the recorded fields expose the calls the handlers
 // made.
 type fakeInstanceService struct {
-	createFn     func(ctx context.Context, input instance.CreateInput) (*model.Instance, error)
-	getFn        func(ctx context.Context, id uuid.UUID) (*model.Instance, error)
-	listFn       func(ctx context.Context, limit int, cursor string) ([]model.Instance, string, error)
-	updateFn     func(ctx context.Context, id uuid.UUID, input instance.UpdateInput) (*model.Instance, error)
-	deleteFn     func(ctx context.Context, id uuid.UUID) error
-	disconnectFn func(ctx context.Context, id uuid.UUID) error
-	connectFn    func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
-	qrFn         func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
+	createFn      func(ctx context.Context, input instance.CreateInput) (*model.Instance, string, error)
+	oldestAdminFn func(ctx context.Context) (uuid.UUID, error)
+	getFn         func(ctx context.Context, id uuid.UUID) (*model.Instance, error)
+	listFn        func(ctx context.Context, limit int, cursor string) ([]model.Instance, string, error)
+	updateFn      func(ctx context.Context, id uuid.UUID, input instance.UpdateInput) (*model.Instance, error)
+	deleteFn      func(ctx context.Context, id uuid.UUID) error
+	disconnectFn  func(ctx context.Context, id uuid.UUID) error
+	connectFn     func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
+	qrFn          func(ctx context.Context, id uuid.UUID) (instance.ConnectResult, error)
 
 	createInputs  []instance.CreateInput
 	updateInputs  []instance.UpdateInput
@@ -40,14 +41,22 @@ type fakeInstanceService struct {
 	listCursor    string
 }
 
-// Create records the input and returns the configured instance, defaulting to a
-// fresh disconnected instance.
-func (f *fakeInstanceService) Create(ctx context.Context, input instance.CreateInput) (*model.Instance, error) {
+// Create records the input and returns the configured instance with its
+// one-time key, defaulting to a fresh disconnected instance with an empty key.
+func (f *fakeInstanceService) Create(ctx context.Context, input instance.CreateInput) (*model.Instance, string, error) {
 	f.createInputs = append(f.createInputs, input)
 	if f.createFn != nil {
 		return f.createFn(ctx, input)
 	}
-	return &model.Instance{ID: uuid.New(), Name: input.Name, ExternalRef: input.ExternalRef, Status: "disconnected"}, nil
+	return &model.Instance{ID: uuid.New(), Name: input.Name, ExternalRef: input.ExternalRef, Status: "disconnected", OwnerUserID: input.OwnerUserID}, "", nil
+}
+
+// OldestAdmin returns the configured oldest admin, defaulting to a fresh id.
+func (f *fakeInstanceService) OldestAdmin(ctx context.Context) (uuid.UUID, error) {
+	if f.oldestAdminFn != nil {
+		return f.oldestAdminFn(ctx)
+	}
+	return uuid.New(), nil
 }
 
 // Get records the id and returns the configured instance, defaulting to a
@@ -150,13 +159,20 @@ func serveJSON(t *testing.T, srv *http.Server, method, path, body string) *httpt
 }
 
 func TestInstancesCreate(t *testing.T) {
-	created := &model.Instance{ID: uuid.New(), Name: "loja", ExternalRef: "crm-1", Status: "disconnected"}
-	svc := &fakeInstanceService{createFn: func(_ context.Context, input instance.CreateInput) (*model.Instance, error) {
-		if input.Name != "loja" || input.ExternalRef != "crm-1" {
-			t.Errorf("Create input = %+v, want name loja and external ref crm-1", input)
-		}
-		return created, nil
-	}}
+	oldest := uuid.New()
+	created := &model.Instance{ID: uuid.New(), Name: "loja", ExternalRef: "crm-1", Status: "disconnected", OwnerUserID: &oldest}
+	svc := &fakeInstanceService{
+		oldestAdminFn: func(context.Context) (uuid.UUID, error) { return oldest, nil },
+		createFn: func(_ context.Context, input instance.CreateInput) (*model.Instance, string, error) {
+			if input.Name != "loja" || input.ExternalRef != "crm-1" {
+				t.Errorf("Create input = %+v, want name loja and external ref crm-1", input)
+			}
+			if input.OwnerUserID == nil || *input.OwnerUserID != oldest {
+				t.Errorf("Create owner = %v, want the oldest admin %s", input.OwnerUserID, oldest)
+			}
+			return created, "one-time-key", nil
+		},
+	}
 
 	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances",
 		`{"name":"loja","external_ref":"crm-1"}`)
@@ -165,7 +181,7 @@ func TestInstancesCreate(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 	var payload struct {
-		Data instanceResponse `json:"data"`
+		Data createInstanceResponse `json:"data"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &payload)
 	if payload.Data.ID != created.ID.String() {
@@ -177,11 +193,17 @@ func TestInstancesCreate(t *testing.T) {
 	if payload.Data.Name != "loja" || payload.Data.ExternalRef != "crm-1" {
 		t.Errorf("data = %+v, want name loja and external ref crm-1", payload.Data)
 	}
+	if payload.Data.OwnerUserID == nil || *payload.Data.OwnerUserID != oldest {
+		t.Errorf("data.owner_user_id = %v, want the oldest admin %s", payload.Data.OwnerUserID, oldest)
+	}
+	if payload.Data.InstanceAPIKey != "one-time-key" {
+		t.Errorf("data.instance_api_key = %q, want the one-time key", payload.Data.InstanceAPIKey)
+	}
 }
 
 func TestInstancesCreateDuplicateExternalRef(t *testing.T) {
-	svc := &fakeInstanceService{createFn: func(context.Context, instance.CreateInput) (*model.Instance, error) {
-		return nil, instance.ErrExternalRefTaken
+	svc := &fakeInstanceService{createFn: func(context.Context, instance.CreateInput) (*model.Instance, string, error) {
+		return nil, "", instance.ErrExternalRefTaken
 	}}
 
 	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances",

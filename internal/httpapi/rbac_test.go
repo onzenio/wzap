@@ -561,8 +561,8 @@ func TestRBACCreateGating(t *testing.T) {
 			}
 			return nil, instance.ErrNotFound
 		},
-		createFn: func(_ context.Context, input instance.CreateInput) (*model.Instance, error) {
-			return created, nil
+		createFn: func(_ context.Context, input instance.CreateInput) (*model.Instance, string, error) {
+			return created, "one-time-key", nil
 		},
 	}
 	srv := New(

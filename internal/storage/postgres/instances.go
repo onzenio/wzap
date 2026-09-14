@@ -38,14 +38,17 @@ func NewInstanceRepository(pool *pgxpool.Pool) *InstanceRepository {
 	return &InstanceRepository{pool: pool}
 }
 
-// Create persists a new instance and returns it with database timestamps.
+// Create persists a new instance with its owner and returns it with database
+// timestamps. A nil OwnerUserID stores NULL (legacy rows); the service always
+// supplies an owner for new rows.
 func (r *InstanceRepository) Create(ctx context.Context, instance model.Instance) (*model.Instance, error) {
 	row := r.pool.QueryRow(ctx, `
-		INSERT INTO instances (id, name, external_ref, status, whatsapp_jid, last_connected_at, last_error)
-		VALUES ($1, $2, NULLIF($3, ''), COALESCE(NULLIF($4, ''), 'disconnected'), NULLIF($5, ''), $6, NULLIF($7, ''))
+		INSERT INTO instances (id, name, external_ref, status, whatsapp_jid, last_connected_at, last_error, owner_user_id)
+		VALUES ($1, $2, NULLIF($3, ''), COALESCE(NULLIF($4, ''), 'disconnected'), NULLIF($5, ''), $6, NULLIF($7, ''), $8)
 		RETURNING `+instanceColumns,
 		instance.ID, instance.Name, instance.ExternalRef, instance.Status,
 		instance.WhatsAppJID, instance.LastConnectedAt, instance.LastError,
+		instance.OwnerUserID,
 	)
 
 	created, err := scanInstance(row)
