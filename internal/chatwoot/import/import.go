@@ -3,9 +3,13 @@ package chatimport
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wzap/internal/session"
@@ -13,15 +17,26 @@ import (
 
 const (
 	opImportContacts = "chatimport: import contacts"
+	opImportMessages = "chatimport: import messages"
 	// contactChunkSize bounds each multi-row upsert; mirrors the Evolution
 	// import batching.
 	contactChunkSize = 3000
+	// messageChunkSize bounds each multi-row message insert; the Evolution
+	// import batches the same way.
+	messageChunkSize = 500
 	// taggableContact and tagContext are the acts-as-taggable-on coordinates
 	// Chatwoot uses for contact tags.
 	taggableContact = "Contact"
 	tagContext      = "tags"
 	// groupNameSuffix marks imported group chats, which carry no phone.
 	groupNameSuffix = " (GROUP)"
+	// importPlaceholderContent replaces content-less history messages when
+	// placeholders are configured; without it they are skipped.
+	importPlaceholderContent = "(mídia não importada)"
+	// messageSourcePrefix namespaces every imported Chatwoot message back to
+	// its WhatsApp key, the same namespace the live mirror uses, so a
+	// history re-import dedups rows the mirror already wrote.
+	messageSourcePrefix = "WAID:"
 )
 
 // ImportContacts upserts history-sync contacts into the Chatwoot database,
@@ -65,6 +80,335 @@ func ImportContacts(ctx context.Context, pool *pgxpool.Pool, accountID, inboxNam
 		}
 	}
 	return len(rows), nil
+}
+
+// MessagesDeps carries the inputs of ImportMessages. Pool nil means the
+// import is disabled (0, nil, no network). AccountID is the Chatwoot account
+// in string form; Token resolves the outgoing sender through access_tokens
+// (empty leaves outgoing senders NULL). DaysLimit cuts history older than
+// that many days (0 disables the cut); NewerThan cuts everything older than
+// the instant (zero disables, used by the lost-messages cron window).
+// Placeholder turns content-less messages into the placeholder text instead
+// of skipping them.
+type MessagesDeps struct {
+	Pool        *pgxpool.Pool
+	AccountID   string
+	Token       string
+	DaysLimit   int
+	NewerThan   time.Time
+	Placeholder bool
+}
+
+// ImportMessages inserts history-sync messages into the Chatwoot database,
+// returning how many were written. Rows land ordered by phone+time, dedup by
+// pre-existing source_id (WAID:, shared with the live mirror, so mirror rows
+// dedup history and re-runs import nothing), in batches. FromMe maps to
+// message_type 1 with the access_tokens user as sender, everything else to
+// message_type 0 with the contact as sender. Messages without content are
+// skipped unless Placeholder is set; messages without chat, key or contact
+// are always skipped.
+//
+// A nil pool means the import is disabled: ImportMessages returns 0, nil
+// without touching the network.
+func ImportMessages(ctx context.Context, deps MessagesDeps, inboxID int64, msgs []session.HistorySyncMessage) (int, error) {
+	if deps.Pool == nil {
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("%s: %w", opImportMessages, err)
+	}
+	account, err := strconv.ParseInt(strings.TrimSpace(deps.AccountID), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid account id %q", opImportMessages, deps.AccountID)
+	}
+	rows := normalizeMessages(msgs, deps.DaysLimit, deps.NewerThan, deps.Placeholder)
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	var senderUser *int64
+	if token := strings.TrimSpace(deps.Token); token != "" {
+		id, found, err := lookupTokenOwner(ctx, deps.Pool, token)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			senderUser = &id
+		}
+	}
+	total := 0
+	for _, chunk := range chunkMessageRows(rows, messageChunkSize) {
+		n, err := importMessageChunk(ctx, deps.Pool, account, inboxID, senderUser, chunk)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// messageRow is one normalized history message ready for the Chatwoot
+// schema: identifier is the chat user part (phone or group id), sourceID the
+// WAID: namespaced key, at the instant stored via to_timestamp.
+type messageRow struct {
+	identifier string
+	sourceID   string
+	content    string
+	fromMe     bool
+	at         time.Time
+}
+
+// normalizeMessages derives Chatwoot rows from history-sync messages: it
+// drops key-less and chat-less entries, cuts daysLimit/newerThan windows,
+// skips content-less messages unless placeholder is set, stamps timeless
+// messages with the import instant, and sorts by phone+time.
+func normalizeMessages(msgs []session.HistorySyncMessage, daysLimit int, newerThan time.Time, placeholder bool) []messageRow {
+	now := time.Now().UTC()
+	var cutoff time.Time
+	if daysLimit > 0 {
+		cutoff = now.AddDate(0, 0, -daysLimit)
+	}
+	rows := make([]messageRow, 0, len(msgs))
+	for _, msg := range msgs {
+		key := strings.TrimSpace(msg.MessageID)
+		if key == "" {
+			continue
+		}
+		identifier, _ := splitJID(msg.ChatJID)
+		if identifier == "" {
+			continue
+		}
+		if !msg.Timestamp.IsZero() {
+			if !cutoff.IsZero() && msg.Timestamp.Before(cutoff) {
+				continue
+			}
+			if !newerThan.IsZero() && msg.Timestamp.Before(newerThan) {
+				continue
+			}
+		}
+		content := strings.TrimSpace(msg.Text)
+		if content == "" {
+			if !placeholder {
+				continue
+			}
+			content = importPlaceholderContent
+		}
+		at := msg.Timestamp
+		if at.IsZero() {
+			at = now
+		}
+		rows = append(rows, messageRow{
+			identifier: identifier,
+			sourceID:   messageSourcePrefix + key,
+			content:    content,
+			fromMe:     msg.IsFromMe,
+			at:         at,
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].identifier != rows[j].identifier {
+			return rows[i].identifier < rows[j].identifier
+		}
+		if !rows[i].at.Equal(rows[j].at) {
+			return rows[i].at.Before(rows[j].at)
+		}
+		return rows[i].sourceID < rows[j].sourceID
+	})
+	return rows
+}
+
+func chunkMessageRows(rows []messageRow, size int) [][]messageRow {
+	var chunks [][]messageRow
+	for len(rows) > 0 {
+		if len(rows) < size {
+			size = len(rows)
+		}
+		chunks = append(chunks, rows[:size])
+		rows = rows[size:]
+	}
+	return chunks
+}
+
+// lookupTokenOwner resolves the Chatwoot user owning token through
+// access_tokens. Found false means no such token; the import still proceeds
+// with NULL outgoing senders.
+func lookupTokenOwner(ctx context.Context, pool *pgxpool.Pool, token string) (int64, bool, error) {
+	var owner int64
+	err := pool.QueryRow(ctx, `SELECT owner_id FROM access_tokens WHERE token = $1 AND owner_type = 'User' LIMIT 1`, token).Scan(&owner)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("%s: lookup sender: %w", opImportMessages, err)
+	}
+	return owner, true, nil
+}
+
+// importMessageChunk writes one chunk of messages: it drops rows whose
+// source_id already exists (history or live-mirror writes), skips rows
+// without a contact, ensures one conversation per phone, and bulk-inserts
+// the rest with to_timestamp epochs.
+func importMessageChunk(ctx context.Context, pool *pgxpool.Pool, account, inboxID int64, senderUser *int64, chunk []messageRow) (int, error) {
+	sources := make([]string, 0, len(chunk))
+	seen := make(map[string]struct{}, len(chunk))
+	for _, row := range chunk {
+		if _, dup := seen[row.sourceID]; dup {
+			continue
+		}
+		seen[row.sourceID] = struct{}{}
+		sources = append(sources, row.sourceID)
+	}
+	existing := make(map[string]struct{}, len(sources))
+	if len(sources) > 0 {
+		rows, err := pool.Query(ctx, `SELECT source_id FROM messages WHERE account_id = $1 AND source_id = ANY($2)`, account, sources)
+		if err != nil {
+			return 0, fmt.Errorf("%s: lookup existing: %w", opImportMessages, err)
+		}
+		for rows.Next() {
+			var source string
+			if err := rows.Scan(&source); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("%s: scan existing: %w", opImportMessages, err)
+			}
+			existing[source] = struct{}{}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("%s: read existing: %w", opImportMessages, err)
+		}
+	}
+
+	identifiers := make([]string, 0, len(chunk))
+	identifierSeen := make(map[string]struct{}, len(chunk))
+	for _, row := range chunk {
+		if _, dup := existing[row.sourceID]; dup {
+			continue
+		}
+		if _, dup := identifierSeen[row.identifier]; dup {
+			continue
+		}
+		identifierSeen[row.identifier] = struct{}{}
+		identifiers = append(identifiers, row.identifier)
+	}
+	contacts := make(map[string]int64, len(identifiers))
+	if len(identifiers) > 0 {
+		rows, err := pool.Query(ctx, `SELECT id, identifier FROM contacts WHERE account_id = $1 AND identifier = ANY($2)`, account, identifiers)
+		if err != nil {
+			return 0, fmt.Errorf("%s: lookup contacts: %w", opImportMessages, err)
+		}
+		for rows.Next() {
+			var id int64
+			var identifier string
+			if err := rows.Scan(&id, &identifier); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("%s: scan contact: %w", opImportMessages, err)
+			}
+			contacts[identifier] = id
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("%s: read contacts: %w", opImportMessages, err)
+		}
+	}
+
+	conversations := make(map[string]int64, len(contacts))
+	for identifier, contactID := range contacts {
+		convID, err := ensureConversation(ctx, pool, account, inboxID, contactID)
+		if err != nil {
+			return 0, err
+		}
+		conversations[identifier] = convID
+	}
+
+	// fresh keeps the first occurrence of each new source_id in chunk order.
+	fresh := make([]messageRow, 0, len(chunk))
+	freshSeen := make(map[string]struct{}, len(chunk))
+	for _, row := range chunk {
+		if _, dup := existing[row.sourceID]; dup {
+			continue
+		}
+		if _, dup := freshSeen[row.sourceID]; dup {
+			continue
+		}
+		freshSeen[row.sourceID] = struct{}{}
+		if _, ok := conversations[row.identifier]; !ok {
+			continue
+		}
+		fresh = append(fresh, row)
+	}
+	if len(fresh) == 0 {
+		return 0, nil
+	}
+
+	var insert strings.Builder
+	insert.WriteString(`INSERT INTO messages (content, account_id, inbox_id, conversation_id, message_type, created_at, updated_at, private, status, source_id, content_type, content_attributes, sender_type, sender_id) VALUES `)
+	args := make([]any, 0, len(fresh)*8)
+	for i, row := range fresh {
+		if i > 0 {
+			insert.WriteString(", ")
+		}
+		convID := conversations[row.identifier]
+		msgType := 0
+		senderType := "Contact"
+		var senderID any = contacts[row.identifier]
+		if row.fromMe {
+			msgType = 1
+			senderType = "User"
+			senderID = nil
+			if senderUser != nil {
+				senderID = *senderUser
+			}
+		}
+		epoch := float64(row.at.UnixNano()) / 1e9
+		base := len(args) + 1
+		// Explicit ordinal binds keep the bulk insert a single round-trip;
+		// to_timestamp adapts the Evolution epoch handling.
+		fmt.Fprintf(&insert, "($%d, $%d, $%d, $%d, $%d, to_timestamp($%d), to_timestamp($%d), FALSE, 0, $%d, 0, '{}', $%d, $%d)",
+			base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
+		args = append(args, row.content, account, inboxID, convID, msgType, epoch, epoch, row.sourceID, senderType, senderID)
+	}
+	if _, err := pool.Exec(ctx, insert.String(), args...); err != nil {
+		return 0, fmt.Errorf("%s: insert messages: %w", opImportMessages, err)
+	}
+	return len(fresh), nil
+}
+
+// ensureConversation returns the conversation of (account, inbox, contact),
+// creating the contact_inbox link and the conversation when absent. The
+// display_id follows the per-account sequence Chatwoot expects.
+func ensureConversation(ctx context.Context, pool *pgxpool.Pool, account, inboxID, contactID int64) (int64, error) {
+	var convID int64
+	err := pool.QueryRow(ctx, `SELECT id FROM conversations WHERE account_id = $1 AND inbox_id = $2 AND contact_id = $3 ORDER BY id LIMIT 1`,
+		account, inboxID, contactID).Scan(&convID)
+	if err == nil {
+		return convID, nil
+	}
+	if err != pgx.ErrNoRows {
+		return 0, fmt.Errorf("%s: lookup conversation: %w", opImportMessages, err)
+	}
+	var inboxLinkID int64
+	err = pool.QueryRow(ctx, `SELECT id FROM contact_inboxes WHERE contact_id = $1 AND inbox_id = $2 ORDER BY id LIMIT 1`,
+		contactID, inboxID).Scan(&inboxLinkID)
+	if err == pgx.ErrNoRows {
+		source := uuid.NewString()
+		err = pool.QueryRow(ctx, `INSERT INTO contact_inboxes (contact_id, inbox_id, source_id, created_at, updated_at)
+			VALUES ($1, $2, $3, NOW(), NOW()) RETURNING id`, contactID, inboxID, source).Scan(&inboxLinkID)
+		if err != nil {
+			return 0, fmt.Errorf("%s: ensure contact_inbox: %w", opImportMessages, err)
+		}
+	} else if err != nil {
+		return 0, fmt.Errorf("%s: lookup contact_inbox: %w", opImportMessages, err)
+	}
+	var display int64
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(MAX(display_id), 0) + 1 FROM conversations WHERE account_id = $1`, account).Scan(&display); err != nil {
+		return 0, fmt.Errorf("%s: next display id: %w", opImportMessages, err)
+	}
+	err = pool.QueryRow(ctx, `INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id, display_id, created_at, updated_at, last_activity_at)
+		VALUES ($1, $2, 0, $3, $4, $5, NOW(), NOW(), NOW()) RETURNING id`,
+		account, inboxID, contactID, inboxLinkID, display).Scan(&convID)
+	if err != nil {
+		return 0, fmt.Errorf("%s: ensure conversation: %w", opImportMessages, err)
+	}
+	return convID, nil
 }
 
 // contactRow is one normalized contact ready for the Chatwoot schema: phone

@@ -53,6 +53,27 @@ a second signal aborts immediately. At boot the service serves even if NATS is
 down (`/readyz` reports it) and the relay ensures the stream when the broker
 returns.
 
+## Chatwoot
+
+Optional connector (`internal/chatwoot/`): live WA→Chatwoot mirror (durable
+`wzap-chatwoot`), open webhook reusing `Enqueue`, and history import through
+direct Chatwoot Postgres SQL (`internal/chatwoot/import`, inert without
+`WZAP_CHATWOOT_IMPORT_DB_URL`).
+
+- Envs: `WZAP_CHATWOOT_ENABLED`, `WZAP_CHATWOOT_BOT_CONTACT`,
+  `WZAP_CHATWOOT_MESSAGE_READ`, `WZAP_CHATWOOT_MESSAGE_DELETE`,
+  `WZAP_CHATWOOT_IMPORT_DB_URL`, `WZAP_CHATWOOT_IMPORT_PLACEHOLDER`.
+- Routes: `PUT`/`GET /instances/{id}/chatwoot` (dual auth),
+  `POST /instances/{id}/chatwoot/import` → `202 {"imported":N}` (dual auth),
+  `POST /chatwoot/webhook/{id}` open by design.
+- Import: phone+time order, `WAID:` source_id dedup shared with the mirror,
+  `days_limit` window, triggers auto post-pairing once (fire-and-forget) +
+  manual + 30min cron (6h window, clears accumulators and the connector
+  cache), pt-BR operational notices. Shutdown stops the import scheduler
+  before the relay; the import `Pool.Close` has its single owner in `serve()`.
+- Operational risks: plaintext token, open webhook, direct SQL against the
+  Chatwoot database (isolated module, URI-guarded).
+
 ## Conventions And Gotchas
 
 - Keep internal imports rooted at module `wzap`.

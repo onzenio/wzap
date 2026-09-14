@@ -36,6 +36,7 @@ type Deps struct {
 	PublicURL         string
 	ChatwootInbound   ChatwootInbound
 	ChatwootClientFor ChatwootClientFor
+	ChatwootImporter  ChatwootImporter
 }
 
 // New builds the HTTP server with the middleware chain, the exact public
@@ -83,6 +84,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("PATCH /users/{id}", handleUpdateUserQuota(deps.Users))
 	api.HandleFunc("PUT /instances/{id}/chatwoot", handleChatwootSet(deps.Instances, deps.ChatwootConfigs, deps.Chatwoot, publicURLForChatwoot(cfg, deps), deps.ChatwootClientFor))
 	api.HandleFunc("GET /instances/{id}/chatwoot", handleChatwootGet(deps.Instances, deps.ChatwootConfigs, deps.Chatwoot, publicURLForChatwoot(cfg, deps)))
+	api.HandleFunc("POST /instances/{id}/chatwoot/import", handleChatwootImport(deps.Instances, deps.ChatwootConfigs, deps.Chatwoot, deps.ChatwootImporter))
 	// "/" is the least-specific outer pattern, so Authenticate runs before
 	// the api mux sees the request: an unknown path without credential
 	// answers 401 here, while the same path with a valid credential falls

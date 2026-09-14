@@ -318,6 +318,14 @@ func (s *FakeSession) ObserveHistorySync(chunk session.HistorySyncChunk) {
 	s.history.Observe(chunk)
 }
 
+// ResetHistorySync clears the accumulated history-sync feed after a
+// successful import.
+func (s *FakeSession) ResetHistorySync() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history.Reset()
+}
+
 // Disconnect records the call and moves the session back to disconnected.
 func (s *FakeSession) Disconnect(context.Context) error {
 	s.mu.Lock()

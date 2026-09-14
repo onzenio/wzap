@@ -47,6 +47,13 @@ var (
 	_ ChatwootInbound     = (*inbound.Handler)(nil)
 )
 
+// ChatwootImporter runs the manual history import of an instance, returning
+// how many messages were written. Production wires the chatimport run;
+// tests replay a count.
+type ChatwootImporter interface {
+	ImportHistory(ctx context.Context, instanceID uuid.UUID) (int, error)
+}
+
 // chatwootSetRequest is the PUT /instances/{id}/chatwoot payload. Booleans
 // are values (absent means false); sign_msg type errors are mapped to 422 by
 // inspecting the decode failure.
@@ -312,6 +319,53 @@ func newChatwootConfigResponse(cfg *model.ChatwootConfig, webhookURL string) cha
 		Logo:                cfg.Logo,
 		IgnoreJIDs:          ignoreJIDs,
 		WebhookURL:          webhookURL,
+	}
+}
+
+// handleChatwootImport runs the manual history import behind the dual auth.
+// The global gate answers 400 when disabled; an unconfigured instance
+// answers 404; success answers 202 with the imported message count.
+func handleChatwootImport(instances InstanceService, configs ChatwootConfigStore, global cfgpkg.Chatwoot, importer ChatwootImporter) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !global.Enabled {
+			Error(w, r, http.StatusBadRequest, "chatwoot_disabled", "chatwoot connector is disabled")
+			return
+		}
+		id, ok := instanceID(w, r)
+		if !ok {
+			return
+		}
+		stored, err := instances.Get(r.Context(), id)
+		if err != nil {
+			writeInstanceError(w, r, err)
+			return
+		}
+		if err := authorizeInstance(r, stored); err != nil {
+			writeForbidden(w, r)
+			return
+		}
+		if _, err := configs.Get(r.Context(), id); err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				Error(w, r, http.StatusNotFound, "not_found", "chatwoot not configured")
+				return
+			}
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		if importer == nil {
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		imported, err := importer.ImportHistory(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				Error(w, r, http.StatusNotFound, "not_found", "chatwoot not configured")
+				return
+			}
+			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+		JSON(w, http.StatusAccepted, map[string]any{"imported": imported})
 	}
 }
 

@@ -78,6 +78,7 @@ func TestLoadFullConfig(t *testing.T) {
 		"WZAP_CHATWOOT_MESSAGE_READ":       "true",
 		"WZAP_CHATWOOT_MESSAGE_DELETE":     "true",
 		"WZAP_CHATWOOT_IMPORT_DB_URL":      "postgres://chatwoot:secret@db:5432/chatwoot",
+		"WZAP_CHATWOOT_IMPORT_PLACEHOLDER": "true",
 	} {
 		t.Setenv(key, value)
 	}
@@ -109,11 +110,12 @@ func TestLoadFullConfig(t *testing.T) {
 		LogFormat:          "text",
 		AutoMigrate:        false,
 		Chatwoot: Chatwoot{
-			Enabled:       true,
-			BotContact:    "123456",
-			MessageRead:   true,
-			MessageDelete: true,
-			ImportDBURL:   "postgres://chatwoot:secret@db:5432/chatwoot",
+			Enabled:           true,
+			BotContact:        "123456",
+			MessageRead:       true,
+			MessageDelete:     true,
+			ImportDBURL:       "postgres://chatwoot:secret@db:5432/chatwoot",
+			ImportPlaceholder: true,
 		},
 	}
 	if got != want {
@@ -407,12 +409,13 @@ func TestLoadChatwootValid(t *testing.T) {
 	t.Setenv("WZAP_CHATWOOT_BOT_CONTACT", "123456")
 	t.Setenv("WZAP_CHATWOOT_MESSAGE_READ", "true")
 	t.Setenv("WZAP_CHATWOOT_MESSAGE_DELETE", "1")
+	t.Setenv("WZAP_CHATWOOT_IMPORT_PLACEHOLDER", "true")
 
 	got, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	want := Chatwoot{Enabled: true, BotContact: "123456", MessageRead: true, MessageDelete: true}
+	want := Chatwoot{Enabled: true, BotContact: "123456", MessageRead: true, MessageDelete: true, ImportPlaceholder: true}
 	if got.Chatwoot != want {
 		t.Errorf("Load().Chatwoot = %+v, want %+v", got.Chatwoot, want)
 	}

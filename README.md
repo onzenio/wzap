@@ -130,6 +130,38 @@ Tipos de mídia aceitos no upload: `image/jpeg`, `image/png`, `image/webp`,
 `audio/ogg`, `application/pdf`, `text/plain`, `.doc`, `.xls`, `.ppt`, `.docx`,
 `.xlsx` e `.pptx`.
 
+## Chatwoot
+
+Conector opcional que espelha mensagens do WhatsApp no Chatwoot em tempo real
+e importa o histórico via SQL direto no Postgres do Chatwoot. Sem
+`WZAP_CHATWOOT_IMPORT_DB_URL` o import fica inerte e o espelho segue normal.
+
+| Variável | Padrão | Descrição |
+| --- | --- | --- |
+| `WZAP_CHATWOOT_ENABLED` | `false` | Liga o conector (espelho, webhook, import). |
+| `WZAP_CHATWOOT_BOT_CONTACT` | `123456` | Identificador do contato operacional (avisos de conexão e import). |
+| `WZAP_CHATWOOT_MESSAGE_READ` | `false` | Projeta recibos de leitura no Chatwoot. |
+| `WZAP_CHATWOOT_MESSAGE_DELETE` | `false` | Sincroniza revogações nos dois sentidos. |
+| `WZAP_CHATWOOT_IMPORT_DB_URL` | vazio | URI do Postgres do Chatwoot para o import; vazia desliga o import. |
+| `WZAP_CHATWOOT_IMPORT_PLACEHOLDER` | `false` | Mensagem sem conteúdo vira `(mídia não importada)` em vez de ser pulada. |
+
+| Método e rota | Corpo/Resposta |
+| --- | --- |
+| `PUT /instances/{id}/chatwoot` | Configuração do conector → `200`; validação falha → `422`. |
+| `GET /instances/{id}/chatwoot` | `200` com a configuração e a `webhook_url`. |
+| `POST /instances/{id}/chatwoot/import` | Import manual → `202` com `{"imported":N}`. |
+| `POST /chatwoot/webhook/{id}` | Webhook aberto por desenho (sem auth), responde corpo de bot. |
+
+O import ordena por telefone+tempo, deduplica por `source_id` (`WAID:`,
+compartilhado com o espelho), respeita `days_limit` e dispara em três
+gatilhos: automático pós-pareamento (uma vez), manual (`POST .../import`) e
+cron de 30 min com janela de 6 h (limpa acumuladores e o cache do conector);
+início e resultado avisam na conversa operacional em pt-BR.
+
+Riscos operacionais: token guardado em claro, webhook aberto por desenho e
+SQL direto no banco do Chatwoot (frágil a upgrades — módulo isolado,
+desligável pela URI).
+
 ## Eventos
 
 O serviço publica em um stream JetStream (nome em `WZAP_NATS_STREAM`, padrão

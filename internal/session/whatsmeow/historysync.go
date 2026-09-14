@@ -17,6 +17,12 @@ func (s *instanceSession) HistorySyncSnapshot() session.HistorySyncSnapshot {
 	return s.history.Snapshot()
 }
 
+// ResetHistorySync clears the accumulated history-sync feed after a
+// successful import, so the next sync starts from zero.
+func (s *instanceSession) ResetHistorySync() {
+	s.history.Reset()
+}
+
 // observeHistorySync folds a history-sync chunk of the pinned library into
 // the per-instance accumulator the Import plan consumes. A chunk without data
 // is dropped. History messages never reach the message sink: replaying the

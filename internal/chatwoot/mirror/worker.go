@@ -180,7 +180,10 @@ type ConnectionNotice struct {
 // production passes client.New, contacts.New and conversations.New. QR is an
 // optional live QR lookup (production: the session manager); pairing notices
 // whose QRImage arrived empty consult it at handle time, and a nil QR keeps
-// the text-only behavior.
+// the text-only behavior. ImportTrigger is the optional post-pairing history
+// import (production: the chatimport run); it fires once per instance after
+// the first connected notice, fire-and-forget, and a nil trigger disables
+// the auto import.
 type Deps struct {
 	Conn             *nats.Conn
 	Stream           string
@@ -192,6 +195,7 @@ type Deps struct {
 	ClientFor        func(cfg model.ChatwootConfig) ChatwootClient
 	ContactsFor      func(cli ChatwootClient, cfg model.ChatwootConfig) ContactResolver
 	ConversationsFor func(cli ChatwootClient, cfg model.ChatwootConfig, inboxID int64) ConversationResolver
+	ImportTrigger    func(ctx context.Context, instanceID uuid.UUID) error
 	Log              *slog.Logger
 }
 
@@ -209,12 +213,14 @@ type Worker struct {
 	clientFor        func(cfg model.ChatwootConfig) ChatwootClient
 	contactsFor      func(cli ChatwootClient, cfg model.ChatwootConfig) ContactResolver
 	conversationsFor func(cli ChatwootClient, cfg model.ChatwootConfig, inboxID int64) ConversationResolver
+	importTrigger    func(ctx context.Context, instanceID uuid.UUID) error
 	log              *slog.Logger
 
 	mu       sync.Mutex
 	runtimes map[uuid.UUID]*instanceRuntime
 	seen     map[uuid.UUID]time.Time
 	notices  map[uuid.UUID]noticeStamp
+	imported map[uuid.UUID]struct{}
 }
 
 // instanceRuntime caches the resolved Chatwoot stack of one instance.
@@ -251,10 +257,12 @@ func New(deps Deps) *Worker {
 		clientFor:        deps.ClientFor,
 		contactsFor:      deps.ContactsFor,
 		conversationsFor: deps.ConversationsFor,
+		importTrigger:    deps.ImportTrigger,
 		log:              log,
 		runtimes:         make(map[uuid.UUID]*instanceRuntime),
 		seen:             make(map[uuid.UUID]time.Time),
 		notices:          make(map[uuid.UUID]noticeStamp),
+		imported:         make(map[uuid.UUID]struct{}),
 	}
 }
 
@@ -573,6 +581,76 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 	}
 	w.stampNotice(instanceID, notice.Status)
 	w.markSeen(eventID)
+	if notice.Status == "connected" {
+		// The history import arms here, after the notice is posted: it
+		// never disturbs the dedup, throttle or QR paths above, and it
+		// runs detached so slow SQL never holds the consumer up.
+		w.maybeAutoImport(instanceID)
+	}
+	return nil
+}
+
+// maybeAutoImport fires the post-pairing history import once per instance.
+// The import runs detached with its own deadline: a stuck or failing import
+// only warns, it never blocks or fails the connection handling.
+func (w *Worker) maybeAutoImport(instanceID uuid.UUID) {
+	if w.importTrigger == nil {
+		return
+	}
+	w.mu.Lock()
+	if _, done := w.imported[instanceID]; done {
+		w.mu.Unlock()
+		return
+	}
+	w.imported[instanceID] = struct{}{}
+	trigger := w.importTrigger
+	w.mu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := trigger(ctx, instanceID); err != nil {
+			w.log.Warn("chatwoot auto import failed", "instance_id", instanceID, "error", err)
+		}
+	}()
+}
+
+// NotifyOperational posts text to the operational conversation in pt-BR. The
+// import triggers use it for their start/result notices. A missing connector
+// configuration skips silently; Chatwoot failures are returned.
+func (w *Worker) NotifyOperational(ctx context.Context, instanceID uuid.UUID, text string) error {
+	log := w.log.With("instance_id", instanceID)
+	if !w.global.Enabled {
+		return nil
+	}
+	cfg, ok, err := w.connectorConfig(ctx, instanceID)
+	if err != nil || !ok {
+		return err
+	}
+	rt, skip, err := w.runtimeFor(ctx, cfg)
+	if err != nil || skip {
+		return err
+	}
+	contactID := w.operationalContactID()
+	contact, cerr := rt.cts.Resolve(ctx, contactID, false, "Operacional", "", contactID)
+	if cerr != nil || contact == nil {
+		log.Warn("operational contact resolution failed, skipping notice", "error", cerr)
+		return nil
+	}
+	conversationID, err := rt.convs.Resolve(ctx, instanceID, OperationalConversationKey, contact.ID)
+	if err != nil {
+		log.Warn("operational conversation resolution failed", "error", err)
+		return err
+	}
+	_, err = rt.cli.CreateMessage(ctx, conversationID, client.CreateMessageRequest{
+		Content:     text,
+		MessageType: client.MessageTypeIncoming,
+		SourceID:    waSourceID("operational/" + uuid.NewString()),
+	})
+	if err != nil {
+		log.Warn("operational notice creation failed", "error", err)
+		return err
+	}
 	return nil
 }
 
