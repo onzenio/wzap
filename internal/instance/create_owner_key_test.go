@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -186,14 +187,55 @@ func TestServiceCreateHashFailure(t *testing.T) {
 	users := newFakeUserRepo(owner)
 	keys := newFakeKeyRepo()
 	keys.setErr = errors.New("database down")
-	svc := NewService(newFakeRepo(), sessiontest.New(nil), &fakeMedia{}, users, keys)
+	repo := newFakeRepo()
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, users, keys)
 
-	_, key, err := svc.Create(context.Background(), CreateInput{Name: "loja", OwnerUserID: ownerPtr(owner.ID)})
+	_, key, err := svc.Create(context.Background(), CreateInput{Name: "loja", ExternalRef: "crm-1", OwnerUserID: ownerPtr(owner.ID)})
 	if err == nil {
 		t.Fatal("Create error = nil, want the hash storage failure")
 	}
 	if key != "" {
 		t.Errorf("plaintext key = %q, want it withheld when the hash was not stored", key)
+	}
+	if len(repo.instances) != 0 {
+		t.Errorf("stored instances = %d, want the just-created row compensated away", len(repo.instances))
+	}
+	if len(repo.deleteCalls) != 1 {
+		t.Fatalf("repo Delete calls = %v, want the one compensating delete", repo.deleteCalls)
+	}
+
+	// The retry starts clean: the same external_ref creates fine once the
+	// keys repository is back.
+	keys.setErr = nil
+	created, retryKey, err := svc.Create(context.Background(), CreateInput{Name: "loja", ExternalRef: "crm-1", OwnerUserID: ownerPtr(owner.ID)})
+	if err != nil {
+		t.Fatalf("retry Create: %v", err)
+	}
+	if retryKey == "" {
+		t.Error("retry plaintext key is empty, want the one-time instance key")
+	}
+	if _, ok := keys.hashes[created.ID]; !ok {
+		t.Error("retry holds no hash for the created instance")
+	}
+}
+
+func TestServiceCreateHashFailureDeleteFails(t *testing.T) {
+	owner := model.User{ID: uuid.New(), Email: "dono@example.com", Role: "user"}
+	users := newFakeUserRepo(owner)
+	keys := newFakeKeyRepo()
+	keys.setErr = errors.New("database down")
+	repo := newFakeRepo()
+	repo.deleteErr = errors.New("delete failed")
+	svc := NewService(repo, sessiontest.New(nil), &fakeMedia{}, users, keys)
+
+	_, _, err := svc.Create(context.Background(), CreateInput{Name: "loja", OwnerUserID: ownerPtr(owner.ID)})
+	if err == nil {
+		t.Fatal("Create error = nil, want the double fault")
+	}
+	for _, want := range []string{"store key hash", "compensating instance delete also failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Create error = %q, want it to mention %q", err, want)
+		}
 	}
 }
 

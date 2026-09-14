@@ -96,7 +96,9 @@ func NewService(repo storage.InstanceRepository, sessions session.Manager, media
 // input.OwnerUserID and emits its instance API key. The owner must resolve to
 // an existing user; only the key hash is persisted via the keys repository,
 // so the plaintext key exists in memory only and is returned here exactly
-// once — never in a column, log or error.
+// once — never in a column, log or error. When the key mint or the hash
+// persist fails after the row was inserted, the row is deleted again so a
+// client retry starts clean instead of colliding with the orphaned row.
 func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instance, string, error) {
 	if input.OwnerUserID == nil {
 		return nil, "", fmt.Errorf("create instance: %w", ErrOwnerRequired)
@@ -109,6 +111,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instanc
 			return nil, "", fmt.Errorf("create instance: %w", ErrOwnerNotFound)
 		}
 		return nil, "", fmt.Errorf("create instance: get owner: %w", err)
+	}
+	if s.keys == nil {
+		return nil, "", fmt.Errorf("create instance: keys repository is not configured")
 	}
 
 	instance := model.Instance{
@@ -126,15 +131,22 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Instanc
 
 	key, hash, err := auth.MintAPIKey()
 	if err != nil {
-		return nil, "", fmt.Errorf("create instance: %w", err)
-	}
-	if s.keys == nil {
-		return nil, "", fmt.Errorf("create instance: keys repository is not configured")
+		return nil, "", s.deleteCreated(ctx, created.ID, fmt.Errorf("mint api key: %w", err))
 	}
 	if err := s.keys.SetHash(ctx, created.ID, hash); err != nil {
-		return nil, "", fmt.Errorf("create instance: store key hash: %w", err)
+		return nil, "", s.deleteCreated(ctx, created.ID, fmt.Errorf("store key hash: %w", err))
 	}
 	return created, key, nil
+}
+
+// deleteCreated removes a just-inserted instance after a post-insert failure
+// (key mint or hash persist). A failed compensation is loud: the returned
+// error mentions both faults, mirroring the seed rollback.
+func (s *Service) deleteCreated(ctx context.Context, id uuid.UUID, cause error) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("create instance: %v; compensating instance delete also failed: %w", cause, err)
+	}
+	return fmt.Errorf("create instance: %w", cause)
 }
 
 // OldestAdmin returns the id of the admin user with the earliest created_at.
