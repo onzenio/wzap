@@ -30,6 +30,7 @@ var allEnvKeys = []string{
 	"WZAP_CHATWOOT_BOT_CONTACT",
 	"WZAP_CHATWOOT_MESSAGE_READ",
 	"WZAP_CHATWOOT_MESSAGE_DELETE",
+	"WZAP_CHATWOOT_IMPORT_DB_URL",
 }
 
 // clearWZAPEnv clears every WZAP_* variable for the test, overriding and later
@@ -76,6 +77,7 @@ func TestLoadFullConfig(t *testing.T) {
 		"WZAP_CHATWOOT_BOT_CONTACT":        "123456",
 		"WZAP_CHATWOOT_MESSAGE_READ":       "true",
 		"WZAP_CHATWOOT_MESSAGE_DELETE":     "true",
+		"WZAP_CHATWOOT_IMPORT_DB_URL":      "postgres://chatwoot:secret@db:5432/chatwoot",
 	} {
 		t.Setenv(key, value)
 	}
@@ -111,6 +113,7 @@ func TestLoadFullConfig(t *testing.T) {
 			BotContact:    "123456",
 			MessageRead:   true,
 			MessageDelete: true,
+			ImportDBURL:   "postgres://chatwoot:secret@db:5432/chatwoot",
 		},
 	}
 	if got != want {
@@ -439,5 +442,27 @@ func TestLoadChatwootRejectsInvalidBool(t *testing.T) {
 				t.Errorf("Load() error = %q, want it to mention %s", err, tt.key)
 			}
 		})
+	}
+}
+
+func TestLoadChatwootImportDBURL(t *testing.T) {
+	clearWZAPEnv(t)
+	setRequiredEnv(t)
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Chatwoot.ImportDBURL != "" {
+		t.Errorf("Load().Chatwoot.ImportDBURL = %q, want empty when WZAP_CHATWOOT_IMPORT_DB_URL is absent", got.Chatwoot.ImportDBURL)
+	}
+
+	t.Setenv("WZAP_CHATWOOT_IMPORT_DB_URL", "postgres://chatwoot:secret@db:5432/chatwoot")
+	got, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Chatwoot.ImportDBURL != "postgres://chatwoot:secret@db:5432/chatwoot" {
+		t.Errorf("Load().Chatwoot.ImportDBURL = %q, want the configured URI", got.Chatwoot.ImportDBURL)
 	}
 }

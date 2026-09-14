@@ -35,12 +35,14 @@ type Config struct {
 }
 
 // Chatwoot holds the global Chatwoot connector switches. BotContact is the
-// operational contact identifier; empty means unset.
+// operational contact identifier; empty means unset. ImportDBURL is the
+// Chatwoot Postgres URI for history import; empty disables the import.
 type Chatwoot struct {
 	Enabled       bool
 	BotContact    string
 	MessageRead   bool
 	MessageDelete bool
+	ImportDBURL   string
 }
 
 const (
@@ -103,6 +105,7 @@ func Load() (Config, error) {
 	cfg.Chatwoot.BotContact = os.Getenv("WZAP_CHATWOOT_BOT_CONTACT")
 	cfg.Chatwoot.MessageRead = boolValue("WZAP_CHATWOOT_MESSAGE_READ", false, &problems)
 	cfg.Chatwoot.MessageDelete = boolValue("WZAP_CHATWOOT_MESSAGE_DELETE", false, &problems)
+	cfg.Chatwoot.ImportDBURL = os.Getenv("WZAP_CHATWOOT_IMPORT_DB_URL")
 
 	if len(problems) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
