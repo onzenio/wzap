@@ -7,6 +7,7 @@ import (
 	"wzap/internal/auth"
 	"wzap/internal/instance"
 	"wzap/internal/storage"
+	"wzap/internal/webhook"
 )
 
 // rotateAPIKeyResponse is the 200 answer to a rotation: the instance id with
@@ -53,6 +54,7 @@ func handleRotateAPIKey(instances InstanceService, keys storage.APIKeyRepository
 			writeKeyError(w, r, err)
 			return
 		}
+		webhook.Keys.Store(stored.ID, key)
 		JSON(w, http.StatusOK, rotateAPIKeyResponse{ID: stored.ID.String(), InstanceAPIKey: key})
 	}
 }
@@ -87,6 +89,7 @@ func handleRevokeAPIKey(instances InstanceService, keys storage.APIKeyRepository
 			writeKeyError(w, r, err)
 			return
 		}
+		webhook.Keys.Clear(stored.ID)
 		JSON(w, http.StatusNoContent, nil)
 	}
 }

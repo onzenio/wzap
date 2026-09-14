@@ -15,6 +15,7 @@ import (
 	"wzap/internal/instance"
 	"wzap/internal/model"
 	"wzap/internal/storage"
+	"wzap/internal/webhook"
 )
 
 const (
@@ -188,6 +189,7 @@ func handleCreateInstance(instances InstanceService, users storage.UserRepositor
 			writeInstanceError(w, r, err)
 			return
 		}
+		webhook.Keys.Store(created.ID, key)
 		JSON(w, http.StatusCreated, newCreateInstanceResponse(created, key))
 	}
 }
@@ -378,6 +380,7 @@ func handleDeleteInstance(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
+		webhook.Keys.Clear(id)
 		JSON(w, http.StatusNoContent, nil)
 	}
 }
