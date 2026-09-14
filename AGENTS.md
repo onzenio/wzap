@@ -11,7 +11,7 @@ authenticated REST API, and publishes durable events through NATS JetStream.
 - `go test ./internal/<package> -run TestName -count=1` - run a focused test.
 - `go vet ./...`, then `golangci-lint run`, then `go test ./...`, then `go build ./...` - CI order in `.github/workflows/ci.yml` (lint is v2.13.2, only govet/staticcheck/errcheck/ineffassign/unused in `.golangci.yml`).
 - `gofmt -l .` must print nothing; `gofmt -w <files>` to fix.
-- `docker compose up -d wzap` - start Postgres, NATS, and wzap locally (service at `127.0.0.1:8081`, token defaults to `dev-wzap-token`).
+- `docker compose up -d wzap` - start Postgres, NATS, and wzap locally (service at `127.0.0.1:8081`, global API key defaults to `dev-wzap-token`).
 - `docker compose exec postgres createdb -U wzap wzap_test` - create the test database once (auto-created only on a fresh Postgres volume).
 
 Go 1.26 is pinned in `go.mod`. Postgres integration tests are skipped when
@@ -26,8 +26,19 @@ and the database was reachable.
 Wiring lives in `cmd/wzap/main.go` (`serve` default, `migrate`, `healthcheck`
 subcommands). Package boundaries:
 
-- `internal/httpapi/` owns the REST transport, auth boundary (`Authorization: Bearer`),
-  and idempotency middleware.
+- `internal/httpapi/` owns the REST transport, the dual auth boundary
+  (manager session JWT in httpOnly cookie OR machine credential in the
+  `apikey:` header: global key or per-instance key), RBAC/ownership
+  enforcement, and idempotency middleware. Routes live at the root (no
+  prefix); `/healthz`, `/readyz`, `/swagger/*`, and `/manager/` are public.
+- `internal/auth/` owns password hashing (bcrypt), instance key minting, and
+  session JWTs; `internal/webhook/` owns per-instance webhook config
+  validation, delivery (envelope + raw `event`, `apikey:` header), and the
+  retry worker with dead-letter logging.
+- `manager/` is the Nuxt console (EN, `baseURL /manager/`); `pnpm --dir
+  manager build` (`nuxt generate`) renders `.output/public`, embedded into
+  the binary via `manager/manager.go` (`go:embed`, SPA fallback). The
+  Dockerfile builds it in a Node/pnpm stage (Node only at build time).
 - `internal/instance/` owns instance lifecycle; `internal/session/session.go` is the
   engine interface, `internal/session/whatsmeow/` the adapter, `internal/session/sessiontest/`
   the fakes.
@@ -47,9 +58,9 @@ subcommands). Package boundaries:
   var fails boot naming the variable); `internal/instancelock/` holds
   process-local locks; `internal/model/` the shared domain types.
 
-Shutdown order is fixed: drain HTTP, then stop outbox, media cleaner, and the
-relay last (relay publishes pending events), all within a shared 10 s deadline;
-a second signal aborts immediately. At boot the service serves even if NATS is
+Shutdown order is fixed: drain HTTP, then stop outbox, media cleaner, webhook
+worker, and the relay last (relay publishes pending events), all within a
+shared 10 s deadline; a second signal aborts immediately. At boot the service serves even if NATS is
 down (`/readyz` reports it) and the relay ensures the stream when the broker
 returns.
 
@@ -63,11 +74,12 @@ returns.
 - Delivery is at-least-once; event IDs must remain stable across retries and
   consumers dedupe by `event_id`.
 - The supported runtime is one replica; locks are process-local.
-- The service is independent of its consumers. Keep user, tenant, account, and
-  business-domain concepts outside this repository; consumers correlate an
-  instance through the opaque `external_ref`.
+- The service is independent of its consumers. It manages its own operator
+  accounts (admin/user with instance ownership, quotas, and keys); tenant,
+  account, and business-domain concepts stay outside this repository;
+  consumers correlate an instance through the opaque `external_ref`.
 - Never commit secrets or local environment files (`.env` overrides the compose
-  dev token).
+  dev API key).
 - Use conventional commits with concise scopes such as `feat(api):`,
   `fix(events):`, and `docs(specs):`.
 
