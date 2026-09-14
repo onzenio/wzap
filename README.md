@@ -26,7 +26,8 @@ durável do NATS JetStream.
 
 Fora de escopo na v1: grupos/newsletters/stories, webhooks globais, SQLite,
 Redis, métricas Prometheus, escala horizontal e implementações de
-consumidores. O serviço roda como **uma réplica**; locks são em memória.
+consumidores. O serviço roda como **uma réplica**; locks são em memória e o
+boot adquire um advisory lock do Postgres (segunda réplica aborta).
 
 > **BREAKING (produto):** o contrato abaixo substitui o contrato headless
 > anterior — header `apikey:` no lugar de `Authorization: Bearer`, rotas na
@@ -254,12 +255,17 @@ contra escritas do Rails).
 
 O serviço publica em um stream JetStream (nome em `WZAP_NATS_STREAM`, padrão
 `WZAP`, subjects `wzap.>`, retenção em `WZAP_EVENT_RETENTION_DAYS`). Cada
-instância tem quatro subjects:
+instância tem seis subjects:
 
 - `wzap.instances.{instance_id}.message` — mensagem recebida.
 - `wzap.instances.{instance_id}.receipt` — recibo de entrega/leitura/reprodução.
 - `wzap.instances.{instance_id}.connection` — mudança de estado da instância.
 - `wzap.instances.{instance_id}.message.status` — status de envio.
+- `wzap.instances.{instance_id}.message.edit` — edição de mensagem recebida.
+- `wzap.instances.{instance_id}.message.delete` — remoção/revoke de mensagem recebida.
+
+O webhook por instância assina quatro tipos (`message`, `receipt`,
+`connection`, `message.status`); edição/remoção trafegam só no NATS.
 
 Todo evento carrega o mesmo envelope versionado (`event_version: 1`);
 `event_id` é estável e enviado como `Nats-Msg-Id` para deduplicação no broker

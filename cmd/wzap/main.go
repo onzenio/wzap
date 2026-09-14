@@ -32,6 +32,7 @@ import (
 	"wzap/internal/media"
 	"wzap/internal/message"
 	"wzap/internal/model"
+	"wzap/internal/replicalock"
 	"wzap/internal/session"
 	"wzap/internal/session/whatsmeow"
 	"wzap/internal/storage"
@@ -96,6 +97,14 @@ func serve() error {
 		return fmt.Errorf("connect database: %w", err)
 	}
 	defer pool.Close()
+
+	// Anti-2-réplicas: locks de instância são process-local e o runtime
+	// suportado é uma réplica; o advisory lock aborta o boot da segunda.
+	releaseLock, err := replicalock.TryAcquire(ctx, pool)
+	if err != nil {
+		return err
+	}
+	defer releaseLock(context.Background())
 
 	// The Chatwoot history-import pool is a process singleton; serve owns its
 	// single Close at shutdown.

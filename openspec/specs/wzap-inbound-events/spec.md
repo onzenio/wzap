@@ -8,7 +8,7 @@ Definir o contrato observável dos eventos publicados no broker para que o backe
 
 ### Requirement: Publicação em stream durável
 
-O serviço SHALL publicar eventos em um stream durável, com subjects por instância, cobrindo mensagem recebida, recibo, status de envio e conexão.
+O serviço SHALL publicar eventos em um stream durável, com subjects por instância, cobrindo mensagem recebida, recibo, status de envio, conexão, edição e remoção.
 
 #### Scenario: Consumidor recebe evento
 
