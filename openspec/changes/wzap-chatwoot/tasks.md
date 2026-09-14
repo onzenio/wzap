@@ -42,4 +42,4 @@
 
 - [x] 7.1 Fiar tudo em `serve()` (repos, worker/consumer, cron, rotas) preservando ordem de shutdown, verificando boot com `WZAP_CHATWOOT_ENABLED` on/off
 - [x] 7.2 Executar gates (`go vet`, `golangci-lint`, `go test ./...` com Postgres, `go build`, `gofmt -l` vazio), verificando saída limpa
-- [ ] 7.3 Atualizar README/AGENTS.md e validar a change (`openspec validate`), verificando `openspec status` completo
+- [x] 7.3 Atualizar README/AGENTS.md e validar a change (`openspec validate`), verificando `openspec status` completo
