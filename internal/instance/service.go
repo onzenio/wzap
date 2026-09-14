@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -283,28 +284,43 @@ func (s *Service) Connect(ctx context.Context, id uuid.UUID) (ConnectResult, err
 
 	switch sess.Status() {
 	case session.StatusConnected:
+		slog.Debug("connect instance branch", "instance_id", id, "op", "connect",
+			"branch", "already-connected", "status", string(session.StatusConnected))
 		return ConnectResult{Status: session.StatusConnected}, nil
 	case session.StatusPairing:
 		result, err := pairingResult(ctx, sess)
 		if err != nil {
+			slog.Warn("connect instance failed", "instance_id", id, "op", "connect",
+				"branch", "already-pairing", "error", err)
 			return ConnectResult{}, fmt.Errorf("connect instance: %w", err)
 		}
+		slog.Debug("connect instance branch", append([]any{"instance_id", id, "op", "connect",
+			"branch", "already-pairing"}, pairingLogAttrs(result)...)...)
 		return result, nil
 	}
 
-	_, qr, expiresAt, err := s.connectPairing(ctx, instance, sess)
+	_, qr, expiresAt, err := s.connectPairing(ctx, instance, sess, "connect")
 	if err != nil {
+		slog.Warn("connect instance failed", "instance_id", id, "op", "connect",
+			"branch", "new-pairing", "error", err)
 		return ConnectResult{}, fmt.Errorf("connect instance: %w", err)
 	}
 	if qr == "" {
 		// The instance has stored credentials: connecting it online needs no
 		// pairing, and the event sink persists the connected status.
+		slog.Debug("connect instance branch", "instance_id", id, "op", "connect",
+			"branch", "stored-credentials", "status", string(session.StatusConnected))
 		return ConnectResult{Status: session.StatusConnected}, nil
 	}
 
 	if err := s.markPairing(ctx, instance); err != nil {
+		slog.Warn("connect instance failed", "instance_id", id, "op", "connect",
+			"branch", "persist-pairing", "error", err)
 		return ConnectResult{}, fmt.Errorf("connect instance: %w", err)
 	}
+	slog.Debug("connect instance branch", "instance_id", id, "op", "connect",
+		"branch", "new-pairing", "status", string(session.StatusPairing),
+		"qr_present", true, "expires_at", expiresAt)
 	return ConnectResult{Status: session.StatusPairing, QRCode: qr, QRExpiresAt: &expiresAt}, nil
 }
 
@@ -324,28 +340,43 @@ func (s *Service) QR(ctx context.Context, id uuid.UUID) (ConnectResult, error) {
 
 	switch sess.Status() {
 	case session.StatusConnected:
+		slog.Debug("qr instance branch", "instance_id", id, "op", "qr",
+			"branch", "already-connected", "status", string(session.StatusConnected))
 		return ConnectResult{}, fmt.Errorf("get qr: %w", ErrAlreadyConnected)
 	case session.StatusPairing:
 		result, err := pairingResult(ctx, sess)
 		if err != nil {
+			slog.Warn("qr instance failed", "instance_id", id, "op", "qr",
+				"branch", "already-pairing", "error", err)
 			return ConnectResult{}, fmt.Errorf("get qr: %w", err)
 		}
+		slog.Debug("qr instance branch", append([]any{"instance_id", id, "op", "qr",
+			"branch", "already-pairing"}, pairingLogAttrs(result)...)...)
 		return result, nil
 	}
 
-	_, qr, expiresAt, err := s.connectPairing(ctx, instance, sess)
+	_, qr, expiresAt, err := s.connectPairing(ctx, instance, sess, "qr")
 	if err != nil {
+		slog.Warn("qr instance failed", "instance_id", id, "op", "qr",
+			"branch", "new-pairing", "error", err)
 		return ConnectResult{}, fmt.Errorf("get qr: %w", err)
 	}
 	if qr == "" {
 		// Stored credentials mean the instance is paired already; there is no
 		// QR to hand out.
+		slog.Debug("qr instance branch", "instance_id", id, "op", "qr",
+			"branch", "stored-credentials", "status", string(session.StatusConnected))
 		return ConnectResult{}, fmt.Errorf("get qr: %w", ErrAlreadyConnected)
 	}
 
 	if err := s.markPairing(ctx, instance); err != nil {
+		slog.Warn("qr instance failed", "instance_id", id, "op", "qr",
+			"branch", "persist-pairing", "error", err)
 		return ConnectResult{}, fmt.Errorf("get qr: %w", err)
 	}
+	slog.Debug("qr instance branch", "instance_id", id, "op", "qr",
+		"branch", "new-pairing", "status", string(session.StatusPairing),
+		"qr_present", true, "expires_at", expiresAt)
 	return ConnectResult{Status: session.StatusPairing, QRCode: qr, QRExpiresAt: &expiresAt}, nil
 }
 
@@ -356,6 +387,17 @@ func pairingResult(ctx context.Context, sess session.Session) (ConnectResult, er
 		return ConnectResult{}, err
 	}
 	return ConnectResult{Status: session.StatusPairing, QRCode: qr, QRExpiresAt: &expiresAt}, nil
+}
+
+// pairingLogAttrs builds the safe result attributes for a pairing outcome:
+// the status plus whether a QR code is present and its expiry. The QR bytes
+// themselves are never logged.
+func pairingLogAttrs(result ConnectResult) []any {
+	attrs := []any{"status", string(result.Status), "qr_present", result.QRCode != ""}
+	if result.QRExpiresAt != nil {
+		attrs = append(attrs, "expires_at", *result.QRExpiresAt)
+	}
+	return attrs
 }
 
 // sessionFor returns the session of instance, resetting a pairing whose
@@ -377,6 +419,7 @@ func (s *Service) sessionFor(ctx context.Context, instance *model.Instance) (ses
 // fresh session ready to pair again. Removing the session first keeps the
 // manager consistent when a session with a deleted device is still registered.
 func (s *Service) resetPairing(ctx context.Context, instance *model.Instance) (session.Session, error) {
+	slog.Debug("reset stale pairing", "instance_id", instance.ID, "branch", "reset-stale-device")
 	if err := s.sessions.Remove(ctx, instance.ID); err != nil {
 		return nil, fmt.Errorf("reset pairing: remove session: %w", err)
 	}
@@ -388,13 +431,18 @@ func (s *Service) resetPairing(ctx context.Context, instance *model.Instance) (s
 }
 
 // connectPairing calls Session.Connect, resetting a pairing whose device was
-// deleted underneath the session (an external logout) and retrying once.
-func (s *Service) connectPairing(ctx context.Context, instance *model.Instance, sess session.Session) (session.Session, string, time.Time, error) {
+// deleted underneath the session (an external logout) and retrying once. The
+// op names the caller (connect or qr) for the boundary logs; error outcomes —
+// including a context cancellation from Connect — are returned unchanged for
+// the caller to log, so retry semantics are untouched.
+func (s *Service) connectPairing(ctx context.Context, instance *model.Instance, sess session.Session, op string) (session.Session, string, time.Time, error) {
 	qr, expiresAt, err := sess.Connect(ctx)
 	if !errors.Is(err, session.ErrNoDevice) {
 		return sess, qr, expiresAt, err
 	}
 
+	slog.Debug("connect pairing device gone, resetting stale pairing",
+		"instance_id", instance.ID, "op", op, "branch", "reset-stale-device")
 	sess, err = s.resetPairing(ctx, instance)
 	if err != nil {
 		return nil, "", time.Time{}, err

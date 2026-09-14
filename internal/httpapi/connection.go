@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -48,9 +49,11 @@ func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		slog.Debug("connect instance request", "instance_id", id, "op", "connect")
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
+			slog.Warn("connect instance failed", "instance_id", id, "op", "connect", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
@@ -61,9 +64,12 @@ func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 
 		result, err := instances.Connect(r.Context(), id)
 		if err != nil {
+			slog.Warn("connect instance failed", "instance_id", id, "op", "connect", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
+		slog.Debug("connect instance result",
+			append([]any{"instance_id", id, "op", "connect"}, connectLogAttrs(result)...)...)
 		JSON(w, http.StatusOK, newConnectResponse(result))
 	}
 }
@@ -92,9 +98,11 @@ func handleQRInstance(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		slog.Debug("qr instance request", "instance_id", id, "op", "qr")
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
+			slog.Warn("qr instance failed", "instance_id", id, "op", "qr", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
@@ -105,9 +113,12 @@ func handleQRInstance(instances InstanceService) http.HandlerFunc {
 
 		result, err := instances.QR(r.Context(), id)
 		if err != nil {
+			slog.Warn("qr instance failed", "instance_id", id, "op", "qr", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
+		slog.Debug("qr instance result",
+			append([]any{"instance_id", id, "op", "qr"}, connectLogAttrs(result)...)...)
 		JSON(w, http.StatusOK, newConnectResponse(result))
 	}
 }
@@ -133,9 +144,11 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		slog.Debug("instance status request", "instance_id", id, "op", "status")
 
 		found, err := instances.Get(r.Context(), id)
 		if err != nil {
+			slog.Warn("instance status failed", "instance_id", id, "op", "status", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
@@ -143,6 +156,7 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 			writeForbidden(w, r)
 			return
 		}
+		slog.Debug("instance status result", "instance_id", id, "op", "status", "status", found.Status)
 		JSON(w, http.StatusOK, statusResponse{
 			Status:          found.Status,
 			WhatsAppJID:     found.WhatsAppJID,
@@ -175,9 +189,11 @@ func handleDisconnectInstance(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		slog.Debug("disconnect instance request", "instance_id", id, "op", "disconnect")
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
+			slog.Warn("disconnect instance failed", "instance_id", id, "op", "disconnect", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
@@ -187,9 +203,11 @@ func handleDisconnectInstance(instances InstanceService) http.HandlerFunc {
 		}
 
 		if err := instances.Disconnect(r.Context(), id); err != nil {
+			slog.Warn("disconnect instance failed", "instance_id", id, "op", "disconnect", "error", err)
 			writeInstanceError(w, r, err)
 			return
 		}
+		slog.Debug("disconnect instance result", "instance_id", id, "op", "disconnect", "status", "disconnected")
 		JSON(w, http.StatusNoContent, nil)
 	}
 }
@@ -201,4 +219,15 @@ func newConnectResponse(result instance.ConnectResult) connectResponse {
 		QRCode:      result.QRCode,
 		QRExpiresAt: result.QRExpiresAt,
 	}
+}
+
+// connectLogAttrs builds the safe result attributes for a pairing outcome:
+// the status plus whether a QR code is present and its expiry. The QR bytes
+// themselves are never logged.
+func connectLogAttrs(result instance.ConnectResult) []any {
+	attrs := []any{"status", string(result.Status), "qr_present", result.QRCode != ""}
+	if result.QRExpiresAt != nil {
+		attrs = append(attrs, "expires_at", *result.QRExpiresAt)
+	}
+	return attrs
 }
