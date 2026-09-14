@@ -3,7 +3,9 @@ package instance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,35 +27,50 @@ type serviceRecord struct {
 // serviceMemoryHandler is an in-memory slog.Handler that records every log
 // record so tests can assert which branch lines Connect/QR emit.
 type serviceMemoryHandler struct {
+	pre  []slog.Attr
+	core *serviceMemoryCore
+}
+
+type serviceMemoryCore struct {
 	mu      sync.Mutex
 	records []serviceRecord
 }
 
-func newServiceMemoryHandler() *serviceMemoryHandler { return &serviceMemoryHandler{} }
+func newServiceMemoryHandler() *serviceMemoryHandler {
+	return &serviceMemoryHandler{core: &serviceMemoryCore{}}
+}
 
 func (h *serviceMemoryHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h *serviceMemoryHandler) Handle(_ context.Context, r slog.Record) error {
-	attrs := make(map[string]any, r.NumAttrs())
+	attrs := make(map[string]any, len(h.pre)+r.NumAttrs())
+	for _, a := range h.pre {
+		attrs[a.Key] = a.Value.Any()
+	}
 	r.Attrs(func(a slog.Attr) bool {
 		attrs[a.Key] = a.Value.Any()
 		return true
 	})
-	h.mu.Lock()
-	h.records = append(h.records, serviceRecord{level: r.Level, msg: r.Message, attrs: attrs})
-	h.mu.Unlock()
+	h.core.mu.Lock()
+	h.core.records = append(h.core.records, serviceRecord{level: r.Level, msg: r.Message, attrs: attrs})
+	h.core.mu.Unlock()
 	return nil
 }
 
-func (h *serviceMemoryHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *serviceMemoryHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &serviceMemoryHandler{
+		pre:  append(append([]slog.Attr{}, h.pre...), attrs...),
+		core: h.core,
+	}
+}
 
 func (h *serviceMemoryHandler) WithGroup(string) slog.Handler { return h }
 
 // snapshot returns a copy of the records captured so far.
 func (h *serviceMemoryHandler) snapshot() []serviceRecord {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]serviceRecord{}, h.records...)
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	return append([]serviceRecord{}, h.core.records...)
 }
 
 // captureServiceLogs swaps the default logger for an in-memory handler and
@@ -84,9 +101,12 @@ func assertNoServiceSecret(t *testing.T, h *serviceMemoryHandler, qr string) {
 		return
 	}
 	for _, r := range h.snapshot() {
-		for key, value := range r.attrs {
-			if s, ok := value.(string); ok && s == qr {
-				t.Errorf("log record %q carries QR bytes in attr %q", r.msg, key)
+		if strings.Contains(r.msg, qr) {
+			t.Fatalf("log message %q contains secret value", r.msg)
+		}
+		for k, v := range r.attrs {
+			if strings.Contains(fmt.Sprintf("%v", v), qr) {
+				t.Fatalf("log record %q attr %q contains secret value", r.msg, k)
 			}
 		}
 	}

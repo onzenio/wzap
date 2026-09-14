@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,35 +28,48 @@ type capturedRecord struct {
 // memoryHandler is an in-memory slog.Handler that records every log record so
 // tests can assert which boundary lines a connection handler emits.
 type memoryHandler struct {
+	pre  []slog.Attr
+	core *memoryCore
+}
+
+type memoryCore struct {
 	mu      sync.Mutex
 	records []capturedRecord
 }
 
-func newMemoryHandler() *memoryHandler { return &memoryHandler{} }
+func newMemoryHandler() *memoryHandler { return &memoryHandler{core: &memoryCore{}} }
 
 func (h *memoryHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h *memoryHandler) Handle(_ context.Context, r slog.Record) error {
-	attrs := make(map[string]any, r.NumAttrs())
+	attrs := make(map[string]any, len(h.pre)+r.NumAttrs())
+	for _, a := range h.pre {
+		attrs[a.Key] = a.Value.Any()
+	}
 	r.Attrs(func(a slog.Attr) bool {
 		attrs[a.Key] = a.Value.Any()
 		return true
 	})
-	h.mu.Lock()
-	h.records = append(h.records, capturedRecord{level: r.Level, msg: r.Message, attrs: attrs})
-	h.mu.Unlock()
+	h.core.mu.Lock()
+	h.core.records = append(h.core.records, capturedRecord{level: r.Level, msg: r.Message, attrs: attrs})
+	h.core.mu.Unlock()
 	return nil
 }
 
-func (h *memoryHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *memoryHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &memoryHandler{
+		pre:  append(append([]slog.Attr{}, h.pre...), attrs...),
+		core: h.core,
+	}
+}
 
 func (h *memoryHandler) WithGroup(string) slog.Handler { return h }
 
 // snapshot returns a copy of the records captured so far.
 func (h *memoryHandler) snapshot() []capturedRecord {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]capturedRecord{}, h.records...)
+	h.core.mu.Lock()
+	defer h.core.mu.Unlock()
+	return append([]capturedRecord{}, h.core.records...)
 }
 
 // captureBoundaryLogs swaps the default logger for an in-memory handler and
@@ -85,13 +100,13 @@ func assertNoQRBytes(t *testing.T, h *memoryHandler, qr string) {
 		return
 	}
 	for _, r := range h.snapshot() {
-		for key, value := range r.attrs {
-			if s, ok := value.(string); ok && s == qr {
-				t.Errorf("log record %q carries QR bytes in attr %q", r.msg, key)
-			}
+		if strings.Contains(r.msg, qr) {
+			t.Fatalf("log message %q contains secret value", r.msg)
 		}
-		if r.msg == qr {
-			t.Errorf("log message carries QR bytes: %q", r.msg)
+		for k, v := range r.attrs {
+			if strings.Contains(fmt.Sprintf("%v", v), qr) {
+				t.Fatalf("log record %q attr %q contains secret value", r.msg, k)
+			}
 		}
 	}
 }
