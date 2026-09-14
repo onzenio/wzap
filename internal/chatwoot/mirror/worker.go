@@ -181,9 +181,9 @@ type ConnectionNotice struct {
 // optional live QR lookup (production: the session manager); pairing notices
 // whose QRImage arrived empty consult it at handle time, and a nil QR keeps
 // the text-only behavior. ImportTrigger is the optional post-pairing history
-// import (production: the chatimport run); it fires once per instance after
-// the first connected notice, fire-and-forget, and a nil trigger disables
-// the auto import.
+// import (production: the chatimport run); it fires once per pairing after
+// the connected notice, fire-and-forget, and a nil trigger disables
+// the auto import. Any non-connected notice re-arms it for the next pairing.
 type Deps struct {
 	Conn             *nats.Conn
 	Stream           string
@@ -527,6 +527,19 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 	if w.alreadySeen(eventID) {
 		return nil
 	}
+	if notice.Status != "connected" {
+		// Any session-down (or pre-pairing) notice ends the current pairing
+		// epoch: the once-flag expires so the next connected notice
+		// re-triggers the auto import exactly once for the new pairing.
+		// Expiring before the throttle check keeps the re-arm even when
+		// this notice itself is suppressed. Clear intentionally does not
+		// expire the flag: the cron clears the cache after successful
+		// imports without session-down, and re-arming there would duplicate
+		// the auto import within the same pairing.
+		w.mu.Lock()
+		delete(w.imported, instanceID)
+		w.mu.Unlock()
+	}
 	if w.throttled(instanceID, notice.Status) {
 		log.Debug("throttling repeated connection notice")
 		// Throttle suppresses sending, not dedup bookkeeping: the throttled
@@ -590,9 +603,11 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 	return nil
 }
 
-// maybeAutoImport fires the post-pairing history import once per instance.
+// maybeAutoImport fires the post-pairing history import once per pairing.
 // The import runs detached with its own deadline: a stuck or failing import
-// only warns, it never blocks or fails the connection handling.
+// only warns, it never blocks or fails the connection handling. A
+// non-connected notice (HandleConnection) re-arms the trigger for the next
+// pairing.
 func (w *Worker) maybeAutoImport(instanceID uuid.UUID) {
 	if w.importTrigger == nil {
 		return

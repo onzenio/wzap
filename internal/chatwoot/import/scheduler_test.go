@@ -111,6 +111,53 @@ func TestSchedulerRunOnceImportsEligibleAndClears(t *testing.T) {
 	}
 }
 
+// TestSchedulerRunOnceSkipsClearOnInertRun pins the missing-URI cycle: when
+// the run is inert (0, nil — no pool, flags off, empty guard) the connector
+// cache is left alone and the feed accumulators stay intact for the next
+// trigger. Only real successful work (imported > 0) clears the cache.
+func TestSchedulerRunOnceSkipsClearOnInertRun(t *testing.T) {
+	id := uuid.New()
+	feed := &fakeFeed{snap: session.HistorySyncSnapshot{
+		Contacts: []session.HistorySyncContact{
+			{JID: "5511999887766@s.whatsapp.net", Name: "Alice"},
+		},
+	}}
+	cleared := 0
+
+	scheduler := NewScheduler(SchedulerDeps{
+		Instances: &fakeSchedulerInstances{instances: []model.Instance{{ID: id}}},
+		Configs: &fakeSchedulerConfigs{cfgs: map[uuid.UUID]*model.ChatwootConfig{
+			id: {InstanceID: id, Enabled: true, ImportMessages: true},
+		}},
+		Sessions: &fakeSchedulerSessions{sessions: map[uuid.UUID]session.Session{
+			id: sessiontest.NewSession(id, nil),
+		}},
+		Run: func(context.Context, uuid.UUID, time.Time) (int, error) {
+			// Mimics importer.run without the import URI: inert, the feed
+			// is never consumed and its accumulators never reset.
+			return 0, nil
+		},
+		ClearCache: func(uuid.UUID) { cleared++ },
+	})
+
+	total, err := scheduler.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if total != 0 {
+		t.Errorf("RunOnce() = %d, want 0 (inert run)", total)
+	}
+	if cleared != 0 {
+		t.Errorf("cleared = %d, want 0 (inert run leaves the cache alone)", cleared)
+	}
+	if feed.resets != 0 {
+		t.Errorf("accumulator resets = %d, want 0 (inert run keeps the feed)", feed.resets)
+	}
+	if len(feed.snap.Contacts) != 1 {
+		t.Errorf("feed contacts = %d, want 1 (inert run leaves accumulators intact)", len(feed.snap.Contacts))
+	}
+}
+
 // TestSchedulerStartTicksUntilStopped pins that Start runs the cycle on the
 // interval until the context ends.
 func TestSchedulerStartTicksUntilStopped(t *testing.T) {

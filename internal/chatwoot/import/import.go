@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,8 +106,12 @@ type MessagesDeps struct {
 // dedup history and re-runs import nothing), in batches. FromMe maps to
 // message_type 1 with the access_tokens user as sender, everything else to
 // message_type 0 with the contact as sender. Messages without content are
-// skipped unless Placeholder is set; messages without chat, key or contact
-// are always skipped.
+// skipped unless Placeholder is set; messages without chat or key are always
+// skipped. Message authors missing from contacts are ensured on demand
+// through the same chunk writer as the bulk contacts import (untagged: no
+// inbox name reaches MessagesDeps), so a messages-only run imports instead
+// of silently dropping every row; the ImportContacts flag keeps meaning the
+// tagged history backfill.
 //
 // A nil pool means the import is disabled: ImportMessages returns 0, nil
 // without touching the network.
@@ -147,10 +152,12 @@ func ImportMessages(ctx context.Context, deps MessagesDeps, inboxID int64, msgs 
 }
 
 // messageRow is one normalized history message ready for the Chatwoot
-// schema: identifier is the chat user part (phone or group id), sourceID the
-// WAID: namespaced key, at the instant stored via to_timestamp.
+// schema: identifier is the chat user part (phone or group id), host the JID
+// domain (g.us marks group chats for the on-demand contact ensure),
+// sourceID the WAID: namespaced key, at the instant stored via to_timestamp.
 type messageRow struct {
 	identifier string
+	host       string
 	sourceID   string
 	content    string
 	fromMe     bool
@@ -173,7 +180,7 @@ func normalizeMessages(msgs []session.HistorySyncMessage, daysLimit int, newerTh
 		if key == "" {
 			continue
 		}
-		identifier, _ := splitJID(msg.ChatJID)
+		identifier, host := splitJID(msg.ChatJID)
 		if identifier == "" {
 			continue
 		}
@@ -198,6 +205,7 @@ func normalizeMessages(msgs []session.HistorySyncMessage, daysLimit int, newerTh
 		}
 		rows = append(rows, messageRow{
 			identifier: identifier,
+			host:       host,
 			sourceID:   messageSourcePrefix + key,
 			content:    content,
 			fromMe:     msg.IsFromMe,
@@ -244,9 +252,9 @@ func lookupTokenOwner(ctx context.Context, pool *pgxpool.Pool, token string) (in
 }
 
 // importMessageChunk writes one chunk of messages: it drops rows whose
-// source_id already exists (history or live-mirror writes), skips rows
-// without a contact, ensures one conversation per phone, and bulk-inserts
-// the rest with to_timestamp epochs.
+// source_id already exists (history or live-mirror writes), ensures the
+// authors missing from contacts on demand, ensures one conversation per
+// phone, and bulk-inserts the rest with to_timestamp epochs.
 func importMessageChunk(ctx context.Context, pool *pgxpool.Pool, account, inboxID int64, senderUser *int64, chunk []messageRow) (int, error) {
 	sources := make([]string, 0, len(chunk))
 	seen := make(map[string]struct{}, len(chunk))
@@ -291,23 +299,14 @@ func importMessageChunk(ctx context.Context, pool *pgxpool.Pool, account, inboxI
 	}
 	contacts := make(map[string]int64, len(identifiers))
 	if len(identifiers) > 0 {
-		rows, err := pool.Query(ctx, `SELECT id, identifier FROM contacts WHERE account_id = $1 AND identifier = ANY($2)`, account, identifiers)
+		var err error
+		contacts, err = queryContactIDs(ctx, pool, opImportMessages, account, identifiers)
 		if err != nil {
-			return 0, fmt.Errorf("%s: lookup contacts: %w", opImportMessages, err)
+			return 0, err
 		}
-		for rows.Next() {
-			var id int64
-			var identifier string
-			if err := rows.Scan(&id, &identifier); err != nil {
-				rows.Close()
-				return 0, fmt.Errorf("%s: scan contact: %w", opImportMessages, err)
-			}
-			contacts[identifier] = id
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return 0, fmt.Errorf("%s: read contacts: %w", opImportMessages, err)
-		}
+	}
+	if err := ensureMessageContacts(ctx, pool, account, chunk, existing, contacts); err != nil {
+		return 0, err
 	}
 
 	conversations := make(map[string]int64, len(contacts))
@@ -372,10 +371,98 @@ func importMessageChunk(ctx context.Context, pool *pgxpool.Pool, account, inboxI
 	return len(fresh), nil
 }
 
+// queryContactIDs maps contact identifiers to ids for one account.
+func queryContactIDs(ctx context.Context, pool *pgxpool.Pool, op string, account int64, identifiers []string) (map[string]int64, error) {
+	contacts := make(map[string]int64, len(identifiers))
+	rows, err := pool.Query(ctx, `SELECT id, identifier FROM contacts WHERE account_id = $1 AND identifier = ANY($2)`, account, identifiers)
+	if err != nil {
+		return nil, fmt.Errorf("%s: lookup contacts: %w", op, err)
+	}
+	for rows.Next() {
+		var id int64
+		var identifier string
+		if err := rows.Scan(&id, &identifier); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("%s: scan contact: %w", op, err)
+		}
+		contacts[identifier] = id
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: read contacts: %w", op, err)
+	}
+	return contacts, nil
+}
+
+// ensureMessageContacts upserts the authors the chunk needs but contacts
+// lacks, reusing the bulk contacts chunk writer untagged (no inbox tag
+// reaches MessagesDeps). Without it a messages-only run (ImportContacts
+// off) would silently drop every row for want of a conversation home.
+func ensureMessageContacts(ctx context.Context, pool *pgxpool.Pool, account int64, chunk []messageRow, existing map[string]struct{}, contacts map[string]int64) error {
+	hosts := make(map[string]string, len(chunk))
+	for _, row := range chunk {
+		if _, dup := existing[row.sourceID]; dup {
+			continue
+		}
+		if _, seen := hosts[row.identifier]; !seen {
+			hosts[row.identifier] = row.host
+		}
+	}
+	var missing []contactRow
+	for identifier, host := range hosts {
+		if _, ok := contacts[identifier]; ok {
+			continue
+		}
+		row := contactRow{identifier: identifier, name: identifier}
+		if host == "g.us" {
+			row.name += groupNameSuffix
+		} else if isDigits(identifier) {
+			phone := "+" + identifier
+			row.phone = &phone
+		}
+		missing = append(missing, row)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	// Deterministic row order: concurrent triggers upsert overlapping
+	// authors, and a shared lock order keeps those upserts from deadlocking
+	// on the (identifier, account_id) key.
+	sort.Slice(missing, func(i, j int) bool { return missing[i].identifier < missing[j].identifier })
+	if err := importContactChunk(ctx, pool, account, 0, false, missing); err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(missing))
+	for _, row := range missing {
+		ids = append(ids, row.identifier)
+	}
+	ensured, err := queryContactIDs(ctx, pool, opImportMessages, account, ids)
+	if err != nil {
+		return err
+	}
+	for identifier, id := range ensured {
+		contacts[identifier] = id
+	}
+	return nil
+}
+
+// conversationMu serializes conversation creation across concurrent import
+// triggers (manual, auto, cron). display_id allocates via MAX()+1 against
+// UNIQUE(account_id, display_id), so two triggers racing the lookup would
+// insert the same id and violate the constraint. One replica is the
+// supported runtime, so a process mutex is the smallest correct lock; the
+// live mirror writes through the Chatwoot API, never this SQL path, so no
+// outside writer can interleave. The whole ensure is covered, not just the
+// allocation: the same race would otherwise duplicate the contact_inbox link
+// and the conversation itself.
+var conversationMu sync.Mutex
+
 // ensureConversation returns the conversation of (account, inbox, contact),
 // creating the contact_inbox link and the conversation when absent. The
 // display_id follows the per-account sequence Chatwoot expects.
 func ensureConversation(ctx context.Context, pool *pgxpool.Pool, account, inboxID, contactID int64) (int64, error) {
+	conversationMu.Lock()
+	defer conversationMu.Unlock()
 	var convID int64
 	err := pool.QueryRow(ctx, `SELECT id FROM conversations WHERE account_id = $1 AND inbox_id = $2 AND contact_id = $3 ORDER BY id LIMIT 1`,
 		account, inboxID, contactID).Scan(&convID)

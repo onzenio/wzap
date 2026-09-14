@@ -147,7 +147,11 @@ func (s *Scheduler) RunOnce(ctx context.Context) (int, error) {
 
 // syncInstance imports one instance when it is eligible: configured,
 // enabled, message import on, and a live session present. The connector
-// cache is cleared after a successful import. It reports false for skipped
+// cache is cleared only after real successful work (imported > 0): an inert
+// run (0, nil — no pool from a missing URI, flags off, empty guard) leaves
+// the cache, and via RunImport's early returns the accumulators, intact.
+// A stale cache is harmless anyway: the mirror rebuilds its stack when the
+// connector configuration changes. It reports false for skipped
 // and failed instances.
 func (s *Scheduler) syncInstance(ctx context.Context, id uuid.UUID, since time.Time) (int, bool) {
 	if s.configs == nil || s.sessions == nil {
@@ -172,7 +176,7 @@ func (s *Scheduler) syncInstance(ctx context.Context, id uuid.UUID, since time.T
 		s.log.Warn("chatwoot sync lost messages failed", "instance_id", id, "error", err)
 		return 0, false
 	}
-	if s.clearCache != nil {
+	if n > 0 && s.clearCache != nil {
 		s.clearCache(id)
 	}
 	return n, true

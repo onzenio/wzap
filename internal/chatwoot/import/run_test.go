@@ -109,6 +109,60 @@ func TestRunImportNoticesCountsAndClears(t *testing.T) {
 	}
 }
 
+// TestRunImportMessagesOnlyEnsuresContacts pins the messages-only flags:
+// with ImportContacts off and ImportMessages on, the run imports the
+// messages (ensuring their authors on demand) instead of returning 0, nil
+// with every row silently dropped.
+func TestRunImportMessagesOnlyEnsuresContacts(t *testing.T) {
+	pool := postgrestest.NewPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, minimalChatwootSchema+extendedChatwootSchema); err != nil {
+		t.Fatalf("create extended Chatwoot schema: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	feed := &fakeFeed{snap: session.HistorySyncSnapshot{
+		Conversations: []session.HistorySyncConversation{{
+			ChatJID: "5511999887766@s.whatsapp.net",
+			Messages: []session.HistorySyncMessage{
+				{MessageID: "M1", ChatJID: "5511999887766@s.whatsapp.net", SenderJID: "5511999887766@s.whatsapp.net", Timestamp: now, Text: "hello"},
+			},
+		}},
+	}}
+	deps := RunDeps{
+		Pool:   pool,
+		Config: model.ChatwootConfig{InstanceID: uuid.New(), Enabled: true, AccountID: "1", NameInbox: "Test Inbox", ImportMessages: true},
+		Inboxes: &fakeInboxes{inboxes: []client.Inbox{
+			{ID: 7, Name: "Test Inbox"},
+		}},
+		Feed: feed,
+	}
+
+	got, err := RunImport(ctx, deps)
+	if err != nil {
+		t.Fatalf("RunImport() error = %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("RunImport() messages-only = %d, want 1 (contacts ensured on demand)", got)
+	}
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages`).Scan(&total); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("messages = %d, want 1", total)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM contacts WHERE account_id = 1 AND identifier = '5511999887766'`).Scan(&total); err != nil {
+		t.Fatalf("count ensured contacts: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("ensured contacts = %d, want 1", total)
+	}
+	if feed.resets != 1 {
+		t.Errorf("accumulator resets = %d, want 1 (real work clears)", feed.resets)
+	}
+}
+
 // TestRunImportInertWithoutPool pins the guard: without a pool the run is a
 // no-op with no notices and no reset.
 func TestRunImportInertWithoutPool(t *testing.T) {

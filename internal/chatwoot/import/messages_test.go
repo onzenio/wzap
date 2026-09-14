@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -339,6 +340,129 @@ func TestImportMessagesPropagatesMirrorSourceIDs(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("ImportMessages() with mirror source_id = %d, want 1 (mirror row dedups)", got)
+	}
+}
+
+// TestImportMessagesEnsuresContactsOnDemand pins the messages-only run:
+// with no contacts seeded, the message authors are ensured on demand
+// (untagged) instead of every row being silently dropped.
+func TestImportMessagesEnsuresContactsOnDemand(t *testing.T) {
+	pool := postgrestest.NewPool(t)
+	ctx := context.Background()
+	seedMessageWorld(t, ctx, pool, nil)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	msgs := []session.HistorySyncMessage{
+		{MessageID: "A1", ChatJID: "5511999887766@s.whatsapp.net", SenderJID: "5511999887766@s.whatsapp.net", Timestamp: base, Text: "hello"},
+		{MessageID: "A2", ChatJID: "5511999887766@s.whatsapp.net", SenderJID: "me@s.whatsapp.net", IsFromMe: true, Timestamp: base.Add(time.Minute), Text: "hi back"},
+		{MessageID: "G1", ChatJID: "120363012345678@g.us", SenderJID: "5511999887766@s.whatsapp.net", Timestamp: base, Text: "group hi"},
+	}
+
+	got, err := ImportMessages(ctx, MessagesDeps{Pool: pool, AccountID: "1"}, 7, msgs)
+	if err != nil {
+		t.Fatalf("ImportMessages() error = %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("ImportMessages() without seeded contacts = %d, want 3 (authors ensured on demand)", got)
+	}
+
+	var phone *string
+	if err := pool.QueryRow(ctx, `SELECT phone_number FROM contacts WHERE account_id = 1 AND identifier = '5511999887766'`).Scan(&phone); err != nil {
+		t.Fatalf("query ensured contact: %v", err)
+	}
+	if phone == nil || *phone != "+5511999887766" {
+		t.Errorf("ensured contact phone = %v, want +5511999887766", strVal(phone))
+	}
+	var name *string
+	if err := pool.QueryRow(ctx, `SELECT name FROM contacts WHERE account_id = 1 AND identifier = '120363012345678'`).Scan(&name); err != nil {
+		t.Fatalf("query ensured group: %v", err)
+	}
+	if name == nil || *name != "120363012345678 (GROUP)" {
+		t.Errorf("ensured group name = %v, want the group suffix", strVal(name))
+	}
+	var tags int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM taggings`).Scan(&tags); err != nil {
+		t.Fatalf("count taggings: %v", err)
+	}
+	if tags != 0 {
+		t.Errorf("taggings = %d, want 0 (on-demand ensure is untagged; tags belong to the bulk flag)", tags)
+	}
+}
+
+// TestImportMessagesConcurrentTriggersShareDisplayIDs pins the display_id
+// race: parallel manual+auto+cron-style imports over the same phones share
+// one conversation per contact with distinct display_ids — no
+// UNIQUE(account_id, display_id) violation, no duplicated conversation, and
+// every row present. Contacts are pre-seeded to isolate the display_id
+// allocation from the on-demand contact ensure.
+func TestImportMessagesConcurrentTriggersShareDisplayIDs(t *testing.T) {
+	pool := postgrestest.NewPool(t)
+	ctx := context.Background()
+	seedMessageWorld(t, ctx, pool, []session.HistorySyncContact{
+		{JID: "5511999887701@s.whatsapp.net", Name: "C1"},
+		{JID: "5511999887702@s.whatsapp.net", Name: "C2"},
+		{JID: "5511999887703@s.whatsapp.net", Name: "C3"},
+		{JID: "5511999887704@s.whatsapp.net", Name: "C4"},
+	})
+
+	phones := []string{
+		"5511999887701@s.whatsapp.net",
+		"5511999887702@s.whatsapp.net",
+		"5511999887703@s.whatsapp.net",
+		"5511999887704@s.whatsapp.net",
+	}
+	base := time.Now().UTC().Truncate(time.Second)
+
+	const triggers = 8
+	const perTrigger = 25
+	errs := make(chan error, triggers)
+	var wg sync.WaitGroup
+	for g := 0; g < triggers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			msgs := make([]session.HistorySyncMessage, 0, perTrigger)
+			for i := 0; i < perTrigger; i++ {
+				chat := phones[(g+i)%len(phones)]
+				msgs = append(msgs, session.HistorySyncMessage{
+					MessageID: "G" + strconv.Itoa(g) + "-M" + strconv.Itoa(i),
+					ChatJID:   chat,
+					SenderJID: chat,
+					Timestamp: base.Add(time.Duration(i) * time.Second),
+					Text:      "concurrent",
+				})
+			}
+			if _, err := ImportMessages(context.Background(), MessagesDeps{Pool: pool, AccountID: "1"}, 7, msgs); err != nil {
+				errs <- err
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("ImportMessages() concurrent error = %v (want no unique violation)", err)
+	}
+
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages`).Scan(&total); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if total != triggers*perTrigger {
+		t.Errorf("messages = %d, want %d (all rows present)", total, triggers*perTrigger)
+	}
+	var conversations int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE account_id = 1`).Scan(&conversations); err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if conversations != len(phones) {
+		t.Errorf("conversations = %d, want %d (one per contact)", conversations, len(phones))
+	}
+	var distinct int
+	if err := pool.QueryRow(ctx, `SELECT count(DISTINCT display_id) FROM conversations WHERE account_id = 1`).Scan(&distinct); err != nil {
+		t.Fatalf("count display ids: %v", err)
+	}
+	if distinct != len(phones) {
+		t.Errorf("distinct display_ids = %d, want %d (no shared allocation)", distinct, len(phones))
 	}
 }
 
