@@ -8,6 +8,7 @@ context: |
   Boundaries: consumers own users, tenants, accounts, and business rules; wzap exposes opaque instance external_ref values only.
   Workflow: OpenSpec owns WHAT+WHY; Superpowers owns implementation quality through TDD, debugging, review, and verification.
   Homes: all change artifacts live in openspec/changes/<name>/ and archived capability specs live in openspec/specs/.
+  Workflow conventions follow superpowers-bridge (brainstorm → proposal → specs → design → tasks → plan → verify → retrospective); they are encoded in this file plus AGENTS.md, with no installed schema directory (the CLI tracks the built-in spec-driven artifacts; brainstorm/plan/verify/retrospective are agent-enforced conventions).
 
 rules:
   proposal:
@@ -25,14 +26,27 @@ rules:
     - "tasks.md is the scope contract: one sentence per task, checkbox format `- [ ] X.Y ...`"
     - Each task states its verification command or observable behavior
     - Keep implementation detail in plan.md, referenced by task ID
+  brainstorm:
+    - brainstorm.md is a raw capture of the brainstorming dialogue (decisions, trade-offs); do not pre-fill design.md there
+    - Never write brainstorm output to docs/superpowers/specs/
+  plan:
+    - plan.md holds TDD micro-steps per task ID with exact files, code, test commands, and commit points
+    - Never write plan output to docs/superpowers/plans/
+  verify:
+    - verify.md is produced AFTER apply, never during planning; all 7 checks recorded
+    - Re-run until blocking issues are resolved
+  retrospective:
+    - retrospective.md is evidence-first (§0 Evidence + 6 sections), written BEFORE the PR while context is hot
+    - Never rewrite a retrospective; add forward-pointers when facts change
 
 operations:
   apply:
     guidance:
+      - "Apply requires plan (not just tasks); use git worktrees + subagent-driven-development"
       - "Follow TDD for behavior changes: failing test first, then minimal implementation"
       - Use systematic-debugging on failures and verification-before-completion before claiming done
       - Run focused tests during development and the complete quality gates before completion
   archive:
     guidance:
-      - Archive only after all tasks and required verification are complete
+      - Archive only after all tasks, verify (no FAIL), and retrospective are complete
       - Sync delta specs into openspec/specs/ before closing the change
