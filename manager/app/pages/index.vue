@@ -61,6 +61,20 @@ useSeoMeta({
             {{ scope === 'global' ? t('overview.scopeGlobal') : t('overview.scopeInstance') }}
           </p>
         </UCard>
+
+        <UCard>
+          <template #header>
+            <h2 class="font-medium text-highlighted">
+              {{ t('overview.instancesCard') }}
+            </h2>
+          </template>
+          <p class="text-sm text-muted">
+            {{ t('overview.instancesCardBody') }}
+          </p>
+          <template #footer>
+            <UButton icon="i-lucide-smartphone" :label="t('overview.openInstances')" @click="navigateTo('/instances')" />
+          </template>
+        </UCard>
       </div>
     </template>
   </UDashboardPanel>

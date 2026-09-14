@@ -19,11 +19,11 @@ export default defineNuxtConfig({
     enabled: true
   },
 
-  css: ['~/assets/css/main.css'],
-
   app: {
     baseURL: '/manager/'
   },
+
+  css: ['~/assets/css/main.css'],
 
   runtimeConfig: {
     public: {
@@ -35,14 +35,39 @@ export default defineNuxtConfig({
   },
 
   routeRules: {
-    // Dev-only convenience: forward API paths to the Go service so the
-    // browser keeps same-origin semantics (session cookie, no CORS). The
-    // static embed has no Nitro server, so these rules are inert there.
-    // NUXT_DEV_PROXY_TARGET overrides the default local address.
-    '/auth/**': { proxy: `${devProxyTarget}/auth/**` },
-    '/instances/**': { proxy: `${devProxyTarget}/instances/**` },
-    '/users/**': { proxy: `${devProxyTarget}/users/**` },
-    '/media/**': { proxy: `${devProxyTarget}/media/**` }
+    // No dev proxy here on purpose: Nitro matches route rules on the path
+    // with app.baseURL stripped, so a rule like /instances/** would also
+    // catch the /manager/instances page and answer 400 (out-of-scope proxy
+    // base). The static embed (task 6.6) has no Nitro server, so any rule
+    // left here would only affect dev and preview. The Vite dev proxy below
+    // matches the raw path instead and only fires at the origin root, where
+    // the browser API client calls.
+  },
+
+  compatibilityDate: '2026-06-30',
+
+  vite: {
+    server: {
+      // Dev-only convenience: forward origin-root API paths to the Go
+      // service so the browser keeps same-origin semantics (session cookie,
+      // no CORS). Page routes live under /manager/ and never match these
+      // prefixes. NUXT_DEV_PROXY_TARGET overrides the default local address.
+      proxy: {
+        '/auth': devProxyTarget,
+        '/instances': devProxyTarget,
+        '/users': devProxyTarget,
+        '/media': devProxyTarget
+      }
+    }
+  },
+
+  eslint: {
+    config: {
+      stylistic: {
+        commaDangle: 'never',
+        braceStyle: '1tbs'
+      }
+    }
   },
 
   i18n: {
@@ -54,14 +79,12 @@ export default defineNuxtConfig({
     strategy: 'no_prefix'
   },
 
-  compatibilityDate: '2026-06-30',
-
-  eslint: {
-    config: {
-      stylistic: {
-        commaDangle: 'never',
-        braceStyle: '1tbs'
-      }
-    }
+  i18n: {
+    locales: [
+      { code: 'en', file: 'en.json' }
+    ],
+    defaultLocale: 'en',
+    langDir: 'locales',
+    strategy: 'no_prefix'
   }
 })

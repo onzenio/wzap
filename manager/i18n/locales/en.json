@@ -5,6 +5,7 @@
   },
   "nav": {
     "overview": "Overview",
+    "instances": "Instances",
     "searchPlaceholder": "Search actions and pages..."
   },
   "auth": {
@@ -32,12 +33,112 @@
     "scopeGlobal": "Operator vision: every instance and account is visible to this admin.",
     "scopeInstance": "Client vision: only this account's own instances are visible.",
     "sessionCard": "Session",
-    "scopeCard": "Scope"
+    "scopeCard": "Scope",
+    "instancesCard": "Instances",
+    "instancesCardBody": "List, create and manage WhatsApp instances.",
+    "openInstances": "Open instances"
   },
   "common": {
     "docs": "API docs",
     "email": "Email",
     "role": "Role",
-    "scope": "Scope"
+    "scope": "Scope",
+    "cancel": "Cancel",
+    "done": "Done",
+    "retry": "Retry",
+    "refresh": "Refresh",
+    "save": "Save",
+    "saving": "Saving...",
+    "loadMore": "Load more",
+    "notSet": "Not set"
+  },
+  "instances": {
+    "title": "Instances",
+    "subtitleAdmin": "Every instance in this service.",
+    "subtitleUser": "Only the instances owned by this account.",
+    "create": "New instance",
+    "empty": "No instances yet. Create the first one to pair a phone.",
+    "loadFailed": "Could not load instances.",
+    "columns": {
+      "name": "Name",
+      "status": "Status",
+      "externalRef": "External ref",
+      "owner": "Owner",
+      "jid": "WhatsApp number"
+    },
+    "status": {
+      "disconnected": "disconnected",
+      "pairing": "pairing",
+      "connected": "connected",
+      "error": "error"
+    },
+    "fields": {
+      "name": "Name",
+      "externalRef": "External reference",
+      "externalRefHint": "Optional unique reference used by your systems.",
+      "owner": "Owner",
+      "jid": "WhatsApp JID",
+      "lastError": "Last error",
+      "createdAt": "Created",
+      "updatedAt": "Updated"
+    },
+    "create": {
+      "title": "New instance",
+      "body": "The instance starts disconnected. Its API key is shown once after creation.",
+      "nameRequired": "Give the instance a name.",
+      "creating": "Creating...",
+      "submit": "Create instance",
+      "failed": "Could not create the instance.",
+      "quotaExceeded": "Instance quota exceeded. Nothing was created.",
+      "externalRefTaken": "This external reference is already in use.",
+      "successTitle": "Instance created",
+      "successBody": "Copy the API key now. It will never be shown again.",
+      "createdToast": "Instance created as disconnected."
+    },
+    "detail": {
+      "loadFailed": "Could not load the instance.",
+      "notFound": "Instance not found.",
+      "saved": "Instance updated.",
+      "saveFailed": "Could not save the instance.",
+      "externalRefTaken": "This external reference is already in use.",
+      "disconnect": "Disconnect",
+      "disconnecting": "Disconnecting...",
+      "disconnectConfirmTitle": "Disconnect instance",
+      "disconnectConfirmBody": "The paired phone is unlinked and the session ends. Pair again later to reconnect.",
+      "disconnected": "Instance disconnected.",
+      "disconnectFailed": "Could not disconnect the instance.",
+      "delete": "Delete instance",
+      "deleted": "Instance deleted."
+    },
+    "delete": {
+      "title": "Delete instance",
+      "body": "This permanently removes the instance {name} and its API key.",
+      "warning": "This action cannot be undone.",
+      "confirmLabel": "Type {name} to confirm",
+      "submit": "Delete permanently",
+      "failed": "Could not delete the instance."
+    },
+    "key": {
+      "cardTitle": "API key",
+      "label": "Instance API key",
+      "copy": "Copy",
+      "copied": "API key copied.",
+      "copiedShort": "Copied",
+      "shownOnceTitle": "Shown only once",
+      "shownOnceBody": "Copy the key now and store it somewhere safe. The service never shows it again.",
+      "keylessTitle": "No API key on file",
+      "keylessBody": "This instance may predate API keys, or its key was revoked or lost. Generate a new key below. The previous key, if any, stops working immediately.",
+      "generate": "Generate key",
+      "generating": "Generating...",
+      "generated": "New API key generated.",
+      "generateFailed": "Could not generate a key.",
+      "rotateHint": "Generating a new key invalidates the current one immediately.",
+      "revoke": "Revoke key",
+      "revoking": "Revoking...",
+      "revokeConfirmTitle": "Revoke API key",
+      "revokeConfirmBody": "The current key stops working at once. The instance stays manageable from this console until a new key is generated.",
+      "revoked": "API key revoked.",
+      "revokeFailed": "Could not revoke the key."
+    }
   }
 }
