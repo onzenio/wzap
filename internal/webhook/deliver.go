@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,14 @@ const deliverTimeout = 5 * time.Second
 // cancellation aborts even faster.
 var webhookClient = &http.Client{Timeout: deliverTimeout}
 
+// ErrSkipped reports a delivery that must not be attempted: the webhook is
+// disabled, has no URL, or does not subscribe the event type. It is distinct
+// from a delivery error on purpose — the 4.3 worker drops ErrSkipped without
+// retry or dead-letter, while any other error is a failed attempt. Callers
+// are expected to check ShouldDeliver first; the empty-URL guard here is the
+// defensive floor under that gate.
+var ErrSkipped = errors.New("webhook: delivery skipped")
+
 // Deliver POSTs payload as JSON to the instance webhook URL with the vigente
 // instance key in the apikey header.
 //
@@ -26,12 +35,16 @@ var webhookClient = &http.Client{Timeout: deliverTimeout}
 // enforced at config time by ValidateURL (plain http only for loopback
 // hosts). That trade-off is accepted.
 //
-// An empty key sends nothing and returns an error (the "sem key" path): a
-// cache miss, a revoked key, or a restart-cold cache must fail recorded,
-// never anonymously delivered. A 2xx status is success; anything else
-// (network error, timeout, non-2xx) is an error naming the URL and the
-// status. Errors never contain the key.
+// An empty URL sends nothing and returns ErrSkipped. An empty key sends
+// nothing and returns an error (the "sem key" path): a cache miss, a revoked
+// key, or a restart-cold cache must fail recorded, never anonymously
+// delivered. A 2xx status is success; anything else (network error, timeout,
+// non-2xx) is an error naming the URL and the status. Errors never contain
+// the key.
 func Deliver(ctx context.Context, url, key string, payload []byte) error {
+	if url == "" {
+		return fmt.Errorf("%w: no webhook url", ErrSkipped)
+	}
 	if key == "" {
 		return fmt.Errorf("webhook deliver to %s: no instance key cached", url)
 	}
@@ -47,7 +60,9 @@ func Deliver(ctx context.Context, url, key string, payload []byte) error {
 		return fmt.Errorf("webhook deliver to %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+	// Drain at most 1 MiB: the body is irrelevant past the status code and
+	// a hostile endpoint must not make us buffer unboundedly.
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)); err != nil {
 		return fmt.Errorf("webhook deliver to %s: drain response: %w", url, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -58,9 +73,14 @@ func Deliver(ctx context.Context, url, key string, payload []byte) error {
 
 // CutRawForLimit trims oversized string values out of a raw JSON event so the
 // webhook body stays bounded: every string longer than limitBytes is replaced
-// by the omission marker {"omitted":true,"size_bytes":<original length>} while
-// all other values are preserved (re-marshaled). Media itself still travels
-// via the envelope media URL; only the inline blob is cut.
+// by the omission marker {"omitted":true,"size_bytes":<original length>}. When
+// nothing crosses the limit the input is returned byte-verbatim (no
+// re-serialization), so numbers, spacing and key order survive untouched.
+//
+// Callers pass the service's MaxMediaBytes (WZAP_MAX_MEDIA_BYTES, 16 MiB) as
+// the limit: the same cap that bounds stored media. Cut blobs need no
+// replacement inline because the media itself still travels via the envelope
+// media URL (/media/{id}); only the inline copy is cut.
 //
 // The cut line is the Go string length in bytes — not the base64-decoded size
 // — a conservative, deterministic rule that needs no MIME awareness.
@@ -87,6 +107,9 @@ func CutRawForLimit(raw []byte, limitBytes int64) (trimmed []byte, cut bool) {
 		return raw, false
 	}
 	trimmedValue, cut := cutValue(value, limitBytes)
+	if !cut {
+		return raw, false
+	}
 	out, err := json.Marshal(trimmedValue)
 	if err != nil {
 		return raw, false

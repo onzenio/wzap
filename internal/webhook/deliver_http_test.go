@@ -2,12 +2,18 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"wzap/internal/events"
 )
 
 // receptor is an httptest webhook endpoint recording what Deliver sent.
@@ -84,6 +90,91 @@ func TestDeliverSendsHeaderAndBody(t *testing.T) {
 		if got := r.gotBody(); got != payload {
 			t.Errorf("status %d: body = %q, want %q", status, got, payload)
 		}
+	}
+}
+
+// TestDeliverEnvelopeTwiceIsByteIdentical pins the at-least-once contract
+// end to end: a real events.Envelope with its raw event rides the webhook
+// body, and redelivering the same payload yields byte-identical bodies with
+// the stable event_id the receiver dedupes on.
+func TestDeliverEnvelopeTwiceIsByteIdentical(t *testing.T) {
+	r := newReceptor(t, http.StatusOK)
+	srv := httptest.NewServer(r.handler())
+	t.Cleanup(srv.Close)
+
+	instanceID := uuid.New()
+	env, err := events.New("message", instanceID, map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatalf("events.New: %v", err)
+	}
+	raw := json.RawMessage(`{"message":{"conversation":"hello"}}`)
+	trimmed, cut := CutRawForLimit(raw, 16<<20)
+	if cut {
+		t.Fatalf("CutRawForLimit cut a small raw event, want it kept")
+	}
+	env.Event = trimmed
+
+	payload, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal envelope: %v", err)
+	}
+
+	const key = "test-instance-key-envelope-idempotent"
+	if err := Deliver(context.Background(), srv.URL, key, payload); err != nil {
+		t.Fatalf("Deliver first attempt: %v", err)
+	}
+	first := r.gotBody()
+	if err := Deliver(context.Background(), srv.URL, key, payload); err != nil {
+		t.Fatalf("Deliver second attempt: %v", err)
+	}
+	second := r.gotBody()
+
+	if got := r.requests.Load(); got != 2 {
+		t.Fatalf("requests received = %d, want 2 attempts", got)
+	}
+	if first != second {
+		t.Errorf("redelivery bodies differ:\nfirst:  %s\nsecond: %s", first, second)
+	}
+	if first != string(payload) {
+		t.Errorf("delivered body = %s, want the envelope payload %s", first, payload)
+	}
+
+	var body struct {
+		EventID string          `json:"event_id"`
+		Type    string          `json:"type"`
+		Event   json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal([]byte(first), &body); err != nil {
+		t.Fatalf("decode delivered body: %v", err)
+	}
+	if body.EventID != env.EventID.String() {
+		t.Errorf("body.event_id = %q, want the stable %q", body.EventID, env.EventID)
+	}
+	if body.Type != "message" {
+		t.Errorf("body.type = %q, want message", body.Type)
+	}
+	if string(body.Event) != string(raw) {
+		t.Errorf("body.event = %s, want the raw event %s", body.Event, raw)
+	}
+	if got := r.gotHeader(); got != key {
+		t.Errorf("apikey header = %q, want the instance key", got)
+	}
+}
+
+// TestDeliverEmptyURLIsSkipped pins the defensive floor under the C1 gate: an
+// empty URL never produces a request and fails with the ErrSkipped sentinel,
+// distinct from a delivery error, so the 4.3 worker drops it without retry.
+func TestDeliverEmptyURLIsSkipped(t *testing.T) {
+	r := newReceptor(t, http.StatusOK)
+	srv := httptest.NewServer(r.handler())
+	t.Cleanup(srv.Close)
+
+	err := Deliver(context.Background(), "", "some-key", []byte(`{"type":"message"}`))
+	if !errors.Is(err, ErrSkipped) {
+		t.Fatalf("Deliver(empty url) error = %v, want ErrSkipped", err)
+	}
+	if got := r.requests.Load(); got != 0 {
+		t.Errorf("requests received = %d, want 0 (empty URL never POSTs)", got)
 	}
 }
 

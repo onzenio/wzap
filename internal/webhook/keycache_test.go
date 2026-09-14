@@ -1,6 +1,10 @@
 package webhook
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -74,5 +78,35 @@ func TestKeyCacheIsolatesInstances(t *testing.T) {
 	}
 	if got, _ := cache.Get(second); got != "key-second" {
 		t.Errorf("Get(second) = %q, want the sibling untouched", got)
+	}
+}
+
+// TestKeyCacheColdStartFailsRecorded locks the restart-cold contract: a fresh
+// cache (every boot) misses, and that miss becomes a recorded delivery
+// failure — nothing is sent, and the error carries no key material. Only the
+// next rotation repopulates the cache; task 7.1 documents this for operators.
+func TestKeyCacheColdStartFailsRecorded(t *testing.T) {
+	r := newReceptor(t, http.StatusOK)
+	srv := httptest.NewServer(r.handler())
+	t.Cleanup(srv.Close)
+
+	cold := NewKeyCache() // a boot-fresh cache: empty by design.
+	id := uuid.New()
+	key, ok := cold.Get(id)
+	if ok || key != "" {
+		t.Fatalf("Get on a cold cache = %q, %v, want %q, false", key, ok, "")
+	}
+
+	err := Deliver(context.Background(), srv.URL, key, []byte(`{"type":"message"}`))
+	if err == nil {
+		t.Fatal("Deliver on a cold-cache miss: error = nil, want the recorded sem-key failure")
+	}
+	if got := r.requests.Load(); got != 0 {
+		t.Errorf("requests received = %d, want 0 (a miss never delivers anonymously)", got)
+	}
+	// The failure is recorded against the URL (so the 4.3 worker knows which
+	// delivery failed); with no key in hand there is no key material to leak.
+	if !strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("error = %q, want it to name the URL", err)
 	}
 }

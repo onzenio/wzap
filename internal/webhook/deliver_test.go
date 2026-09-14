@@ -46,11 +46,14 @@ func TestCutRawForLimit(t *testing.T) {
 			wantExact: "not json{{{",
 		},
 		{
-			name:      "small strings kept",
-			raw:       `{"text":"hi","n":42,"ok":true,"nothing":null}`,
-			limit:     16,
+			name:  "small strings kept byte-verbatim without re-serialization",
+			raw:   `{"text": "hi", "n": 42, "ok": true, "nothing": null}`,
+			limit: 16,
+			// No string crosses the limit, so the input must come back
+			// byte-identical: spacing and key order preserved, no Marshal
+			// round trip.
 			wantCut:   false,
-			wantExact: `{"n":42,"nothing":null,"ok":true,"text":"hi"}`,
+			wantExact: `{"text": "hi", "n": 42, "ok": true, "nothing": null}`,
 		},
 		{
 			name:    "nested blobs cut with marker and size",
@@ -144,6 +147,25 @@ func TestCutRawForLimit(t *testing.T) {
 				// "é" is 2 bytes in UTF-8: the cut line is string length,
 				// not rune count or base64-decoded size.
 				assertMarker(t, got["v"], 2)
+			},
+		},
+		{
+			name:    "media limit binding: blob above 16 MiB is cut",
+			raw:     `{"blob":"` + strings.Repeat("c", (16<<20)+1) + `"}`,
+			limit:   16 << 20,
+			wantCut: true,
+			check: func(t *testing.T, out []byte) {
+				t.Helper()
+				// The delivery cut binds to the same media limit as
+				// WZAP_MAX_MEDIA_BYTES (16 MiB): callers pass the service's
+				// MaxMediaBytes so oversized inline blobs never ride the
+				// webhook body — the media itself travels via the envelope
+				// media URL.
+				var got map[string]any
+				if err := json.Unmarshal(out, &got); err != nil {
+					t.Fatalf("Unmarshal out: %v", err)
+				}
+				assertMarker(t, got["blob"], (16<<20)+1)
 			},
 		},
 	}
