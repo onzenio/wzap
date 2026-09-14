@@ -109,6 +109,34 @@ export interface UpdateInstanceInput {
   external_ref: string
 }
 
+// Canonical webhook event types in the stored order. Mirrors canonicalEvents
+// in internal/webhook/webhook.go: matching is case-sensitive and an explicit
+// empty list stays empty (it delivers nothing).
+export const WEBHOOK_EVENT_TYPES = ['message', 'receipt', 'connection', 'message.status'] as const
+
+// One subscribed webhook event type.
+export type WebhookEventType = typeof WEBHOOK_EVENT_TYPES[number]
+
+// Payload sent to PATCH /instances/{id} for webhook-only edits. The name and
+// external_ref fields stay omitted so the stored values are kept; an explicit
+// empty webhook_url unsets the webhook and an explicit empty webhook_events
+// list clears the subscription. A 422 ApiError carries the server validation
+// message (unknown type, bad URL, non-loopback http).
+export interface UpdateWebhookInput {
+  webhook_url: string
+  webhook_enabled: boolean
+  webhook_events: string[]
+}
+
+// Payload sent to POST /users (admin scope only). An omitted instance_quota
+// applies the server default; 0 means unlimited.
+export interface CreateUserInput {
+  email: string
+  password: string
+  role: AccountRole
+  instance_quota?: number
+}
+
 // Account as answered by GET /users (admin scope only). Used to resolve the
 // owner column of the instance list.
 export interface AccountUser {

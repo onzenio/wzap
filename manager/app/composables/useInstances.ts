@@ -7,7 +7,8 @@ import type {
   Instance,
   InstanceListPage,
   RotatedInstanceKey,
-  UpdateInstanceInput
+  UpdateInstanceInput,
+  UpdateWebhookInput
 } from '~/types/api'
 
 // Debt: the API exposes no has-key flag, so this browser-side marker stands
@@ -74,6 +75,21 @@ export function useInstances() {
     })
   }
 
+  // PATCH /instances/{id} with webhook-only fields. Name and external_ref
+  // stay omitted so the stored values are kept. Anyone operating the instance
+  // (global, owning user, own instance key) may call it; a 422 ApiError
+  // carries the server validation message verbatim for the UI to mirror.
+  async function updateInstanceWebhook(id: string, input: UpdateWebhookInput): Promise<Instance> {
+    return await api<Instance>(`/instances/${id}`, {
+      method: 'PATCH',
+      body: {
+        webhook_url: input.webhook_url,
+        webhook_enabled: input.webhook_enabled,
+        webhook_events: input.webhook_events
+      }
+    })
+  }
+
   // DELETE answers 204 with no envelope, so it goes through the raw client.
   async function deleteInstance(id: string): Promise<void> {
     await raw(`/instances/${id}`, { method: 'DELETE' })
@@ -128,6 +144,7 @@ export function useInstances() {
     getInstance,
     createInstance,
     updateInstance,
+    updateInstanceWebhook,
     deleteInstance,
     disconnectInstance,
     connectInstance,

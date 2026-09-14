@@ -1,14 +1,15 @@
 import { createSharedComposable } from '@vueuse/core'
 
 // Shell-level shortcuts. Later tasks register their own keys here next to
-// the overview and instances shortcuts; keeping them in one place avoids
-// collisions.
+// the overview, instances and accounts shortcuts; keeping them in one place
+// avoids collisions.
 const _useDashboard = () => {
   const router = useRouter()
 
   defineShortcuts({
     'g-h': () => router.push('/'),
-    'g-i': () => router.push('/instances')
+    'g-i': () => router.push('/instances'),
+    'g-a': () => router.push('/accounts')
   })
 }
 

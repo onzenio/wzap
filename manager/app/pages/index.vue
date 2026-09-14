@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const { t } = useI18n()
-const { user, scope } = useAuth()
+const { user, scope, isAdmin } = useAuth()
 
 useSeoMeta({
   title: 'Overview'
@@ -73,6 +73,20 @@ useSeoMeta({
           </p>
           <template #footer>
             <UButton icon="i-lucide-smartphone" :label="t('overview.openInstances')" @click="navigateTo('/instances')" />
+          </template>
+        </UCard>
+
+        <UCard v-if="isAdmin">
+          <template #header>
+            <h2 class="font-medium text-highlighted">
+              {{ t('overview.accountsCard') }}
+            </h2>
+          </template>
+          <p class="text-sm text-muted">
+            {{ t('overview.accountsCardBody') }}
+          </p>
+          <template #footer>
+            <UButton icon="i-lucide-users" :label="t('overview.openAccounts')" @click="navigateTo('/accounts')" />
           </template>
         </UCard>
       </div>

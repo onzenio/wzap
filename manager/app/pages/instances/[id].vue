@@ -4,6 +4,7 @@ import DeleteInstanceModal from '~/components/instances/DeleteInstanceModal.vue'
 import InstanceStatusBadge from '~/components/instances/InstanceStatusBadge.vue'
 import OneTimeKeyDisplay from '~/components/instances/OneTimeKeyDisplay.vue'
 import PairingCard from '~/components/instances/PairingCard.vue'
+import WebhookCard from '~/components/instances/WebhookCard.vue'
 import type { Instance, RotatedInstanceKey } from '~/types/api'
 
 const { t } = useI18n()
@@ -121,6 +122,12 @@ function onDeleted() {
 // connected; reloading refreshes the badge, JID and disconnect action.
 async function onPaired() {
   await load()
+}
+
+// The webhook card emits the stored instance answered by its PATCH; the
+// detail keeps showing the persisted configuration.
+function onWebhookUpdated(updated: Instance) {
+  instance.value = updated
 }
 
 async function onGenerate() {
@@ -366,6 +373,11 @@ await load()
             </template>
           </div>
         </UCard>
+
+        <WebhookCard
+          :instance="instance"
+          @updated="onWebhookUpdated"
+        />
 
         <UCard>
           <template #header>

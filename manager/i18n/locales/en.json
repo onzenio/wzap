@@ -6,6 +6,7 @@
   "nav": {
     "overview": "Overview",
     "instances": "Instances",
+    "accounts": "Accounts",
     "searchPlaceholder": "Search actions and pages..."
   },
   "auth": {
@@ -36,7 +37,10 @@
     "scopeCard": "Scope",
     "instancesCard": "Instances",
     "instancesCardBody": "List, create and manage WhatsApp instances.",
-    "openInstances": "Open instances"
+    "openInstances": "Open instances",
+    "accountsCard": "Accounts",
+    "accountsCardBody": "Create accounts, edit quotas and remove accounts.",
+    "openAccounts": "Open accounts"
   },
   "common": {
     "docs": "API docs",
@@ -151,6 +155,60 @@
       "revokeConfirmBody": "The current key stops working at once. The instance stays manageable from this console until a new key is generated.",
       "revoked": "API key revoked.",
       "revokeFailed": "Could not revoke the key."
+    },
+    "webhook": {
+      "cardTitle": "Webhook",
+      "url": "URL",
+      "urlHint": "HTTPS anywhere; plain HTTP only for loopback hosts (localhost, 127.x, ::1). Empty unsets the webhook.",
+      "enabled": "Enabled",
+      "events": "Subscribed event types",
+      "eventsHint": "Only these types are delivered over HTTP; the rest stay on NATS. Unknown types are rejected.",
+      "selectAll": "All",
+      "selectNone": "None",
+      "noEventsTitle": "No events subscribed",
+      "noEventsBody": "Nothing will be delivered until at least one type is selected.",
+      "saved": "Webhook updated.",
+      "saveFailed": "Could not save the webhook."
+    }
+  },
+  "accounts": {
+    "title": "Accounts",
+    "subtitle": "Every manager account. Only admins see this screen.",
+    "empty": "No accounts yet. Create the first client account.",
+    "loadFailed": "Could not load accounts.",
+    "quotaLabel": "Instance quota",
+    "unlimited": "Unlimited",
+    "create": {
+      "title": "New account",
+      "body": "The account signs in with email and password. Quota 0 means unlimited.",
+      "emailRequired": "Give the account an email.",
+      "passwordRequired": "Give the account a password.",
+      "quotaInvalid": "Quota must be a whole number 0 or above, or left empty for the default.",
+      "quotaHint": "Whole number 0 or above; empty applies the server default. 0 means unlimited.",
+      "creating": "Creating...",
+      "submit": "Create account",
+      "failed": "Could not create the account.",
+      "emailTaken": "This email is already in use.",
+      "createdToast": "Account created."
+    },
+    "quota": {
+      "title": "Edit quota",
+      "body": "Set the instance quota for {email}. 0 means unlimited.",
+      "hint": "Whole number 0 or above. 0 means unlimited.",
+      "edit": "Edit quota",
+      "quotaInvalid": "Quota must be a whole number 0 or above.",
+      "updated": "Quota updated.",
+      "saveFailed": "Could not save the quota."
+    },
+    "delete": {
+      "action": "Delete",
+      "title": "Delete account",
+      "body": "This permanently removes the account {email}.",
+      "submit": "Delete permanently",
+      "deleting": "Deleting...",
+      "failed": "Could not delete the account.",
+      "ownsInstances": "This account still owns instances. Remove its instances first.",
+      "deleted": "Account deleted."
     }
   }
 }
