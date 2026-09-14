@@ -135,16 +135,18 @@ func TestParseTokenRejects(t *testing.T) {
 		t.Fatalf("MintToken: %v", err)
 	}
 
-	// Tampering the last base64url char is flaky: the HS256 signature
-	// (32 bytes = 43 chars) carries 2 padding bits in the final char, so
-	// some replacements decode to identical bytes and stay valid. Flip a
-	// middle char instead, which always changes the decoded bytes.
-	mid := len(token) / 2
-	tampered := token
-	if tampered[mid] == 'A' {
-		tampered = tampered[:mid] + "B" + tampered[mid+1:]
-	} else {
-		tampered = tampered[:mid] + "A" + tampered[mid+1:]
+	// Tamper the first byte of the signature segment: unlike the last
+	// base64 char (whose low bits are padding and may decode identically),
+	// flipping full-data bits always changes the HMAC and must be rejected.
+	segments := strings.Split(token, ".")
+	tampered := token[:len(token)-1] + "x"
+	if len(segments) == 3 && len(segments[2]) > 0 {
+		first := segments[2][0]
+		rep := byte('x')
+		if first == 'x' {
+			rep = 'y'
+		}
+		tampered = segments[0] + "." + segments[1] + "." + string([]byte{rep}) + segments[2][1:]
 	}
 
 	for _, tt := range []struct {

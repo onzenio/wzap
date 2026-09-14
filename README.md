@@ -206,6 +206,50 @@ Tipos de mídia aceitos no upload: `image/jpeg`, `image/png`, `image/webp`,
 `audio/ogg`, `application/pdf`, `text/plain`, `.doc`, `.xls`, `.ppt`, `.docx`,
 `.xlsx` e `.pptx`.
 
+## Chatwoot
+
+Conector opcional que espelha mensagens do WhatsApp no Chatwoot em tempo real
+e importa o histórico via SQL direto no Postgres do Chatwoot. Sem
+`WZAP_CHATWOOT_IMPORT_DB_URL` o import fica inerte e o espelho segue normal.
+
+| Variável | Padrão | Descrição |
+| --- | --- | --- |
+| `WZAP_CHATWOOT_ENABLED` | `false` | Liga o conector (espelho, webhook, import). |
+| `WZAP_CHATWOOT_BOT_CONTACT` | `123456` | Identificador do contato operacional (avisos de conexão e import). |
+| `WZAP_CHATWOOT_MESSAGE_READ` | `false` | Projeta recibos de leitura no Chatwoot. |
+| `WZAP_CHATWOOT_MESSAGE_DELETE` | `false` | Sincroniza revogações nos dois sentidos. |
+| `WZAP_CHATWOOT_IMPORT_DB_URL` | vazio | URI do Postgres do Chatwoot para o import; vazia desliga o import. |
+| `WZAP_CHATWOOT_IMPORT_PLACEHOLDER` | `false` | Mensagem sem conteúdo vira `(mídia não importada)` em vez de ser pulada. |
+
+| Método e rota | Corpo/Resposta |
+| --- | --- |
+| `PUT /instances/{id}/chatwoot` | Configuração do conector → `200`; validação falha → `422`. O `token` é aceito só na escrita e nunca volta nas respostas. |
+| `GET /instances/{id}/chatwoot` | `200` com a configuração (sem o `token`) e a `webhook_url`. |
+| `POST /instances/{id}/chatwoot/import` | Import manual → `202` com `{"imported":N}`, onde N conta mensagens importadas (contatos não entram na conta). |
+| `POST /chatwoot/webhook/{id}` | Webhook aberto por desenho (sem auth), responde corpo de bot. |
+
+O espelho cobre texto, mídias (imagem, vídeo, áudio, documento e figurinha
+via anexo), contato simples e em lista, localização, listas, reactions,
+botões interativos (incluindo PIX), pedidos, produtos e anúncios (com a
+miniatura anexada quando os bytes vêm no evento). Enquetes, chamadas, avisos
+de protocolo e reactions criptografadas não têm equivalente em texto e são
+puladas com `warn`, sem derrubar o worker.
+
+O import ordena por telefone+tempo, deduplica por `source_id` (`WAID:`,
+compartilhado com o espelho), respeita `days_limit` e dispara em três
+gatilhos: automático pós-pareamento (uma vez), manual (`POST .../import`) e
+cron de 30 min com janela de 6 h (limpa acumuladores e o cache do conector);
+falha num lote retorna a contagem parcial junto com o erro; início e
+resultado avisam na conversa operacional em pt-BR.
+
+Riscos operacionais: token guardado em claro mas nunca ecoado (só escrita),
+webhook aberto por desenho com busca de anexos sob allowlist SSRF
+(só `http`/`https`, no máximo 3 redirects, metadados/link-local sempre
+bloqueados, IP privado/loopback só para o host do Chatwoot configurado) e
+SQL direto no banco do Chatwoot (frágil a upgrades — módulo isolado,
+desligável pela URI; `display_id` com retry limitado em conflito de unicidade
+contra escritas do Rails).
+
 ## Eventos
 
 O serviço publica em um stream JetStream (nome em `WZAP_NATS_STREAM`, padrão

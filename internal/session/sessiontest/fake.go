@@ -132,6 +132,28 @@ type PresenceCall struct {
 	State   string
 }
 
+// DeleteCall records one DeleteMessage invocation.
+type DeleteCall struct {
+	ChatJID   string
+	MessageID string
+}
+
+// MarkReadCall records one MarkRead invocation.
+type MarkReadCall struct {
+	ChatJID   string
+	SenderJID string
+	MessageID string
+}
+
+// PairPhoneCall records one PairPhone invocation.
+type PairPhoneCall struct {
+	Number string
+}
+
+// defaultPairPhoneCode is the pairing code a fake returns when the test did
+// not configure one.
+const defaultPairPhoneCode = "12345678"
+
 // FakeSession is an in-memory session.Session.
 type FakeSession struct {
 	mu         sync.Mutex
@@ -144,12 +166,19 @@ type FakeSession struct {
 	qrExpiresAt time.Time
 
 	// Forced errors, when set, are returned by the matching method.
-	ConnectErr      error
-	QRErr           error
-	SendErr         error
-	IsOnWhatsAppErr error
-	SendPresenceErr error
-	DisconnectErr   error
+	ConnectErr       error
+	QRErr            error
+	SendErr          error
+	IsOnWhatsAppErr  error
+	SendPresenceErr  error
+	DisconnectErr    error
+	DeleteMessageErr error
+	MarkReadErr      error
+	PairPhoneErr     error
+
+	// PairPhoneCode is returned by PairPhone; empty falls back to
+	// defaultPairPhoneCode.
+	PairPhoneCode string
 
 	// OnWhatsApp maps a phone number to its JID. Numbers absent from the map
 	// are reported as not registered.
@@ -160,6 +189,13 @@ type FakeSession struct {
 	isOnWhatsAppCalls int
 	sends             []session.OutboundMessage
 	presences         []PresenceCall
+	deletes           []DeleteCall
+	markReads         []MarkReadCall
+	pairPhones        []PairPhoneCall
+
+	// history accumulates the history-sync feed the Import plan consumes.
+	// The zero value is ready to use.
+	history session.HistorySyncAccumulator
 }
 
 // NewSession returns a standalone fake session for tests that do not go
@@ -233,6 +269,61 @@ func (s *FakeSession) SendPresence(_ context.Context, chatJID, state string) err
 	defer s.mu.Unlock()
 	s.presences = append(s.presences, PresenceCall{ChatJID: chatJID, State: state})
 	return s.SendPresenceErr
+}
+
+// DeleteMessage records the call and returns the forced error, when set.
+func (s *FakeSession) DeleteMessage(_ context.Context, chatJID, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deletes = append(s.deletes, DeleteCall{ChatJID: chatJID, MessageID: messageID})
+	return s.DeleteMessageErr
+}
+
+// MarkRead records the call and returns the forced error, when set.
+func (s *FakeSession) MarkRead(_ context.Context, chatJID, senderJID, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markReads = append(s.markReads, MarkReadCall{ChatJID: chatJID, SenderJID: senderJID, MessageID: messageID})
+	return s.MarkReadErr
+}
+
+// PairPhone records the call, returns the forced error when set and otherwise
+// the configured code (or the stable default when none was configured).
+func (s *FakeSession) PairPhone(_ context.Context, number string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pairPhones = append(s.pairPhones, PairPhoneCall{Number: number})
+	if s.PairPhoneErr != nil {
+		return "", s.PairPhoneErr
+	}
+	if s.PairPhoneCode != "" {
+		return s.PairPhoneCode, nil
+	}
+	return defaultPairPhoneCode, nil
+}
+
+// HistorySyncSnapshot returns the accumulated history-sync feed, mirroring
+// the whatsmeow adapter for the Import plan.
+func (s *FakeSession) HistorySyncSnapshot() session.HistorySyncSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.history.Snapshot()
+}
+
+// ObserveHistorySync folds chunk into the fake feed, like the whatsmeow
+// adapter does for live history-sync events.
+func (s *FakeSession) ObserveHistorySync(chunk session.HistorySyncChunk) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history.Observe(chunk)
+}
+
+// ResetHistorySync clears the accumulated history-sync feed after a
+// successful import.
+func (s *FakeSession) ResetHistorySync() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history.Reset()
 }
 
 // Disconnect records the call and moves the session back to disconnected.
@@ -312,10 +403,45 @@ func (s *FakeSession) PresenceCalls() []PresenceCall {
 	return append([]PresenceCall(nil), s.presences...)
 }
 
+// DeleteCalls returns the delete calls, in order.
+func (s *FakeSession) DeleteCalls() []DeleteCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]DeleteCall(nil), s.deletes...)
+}
+
+// MarkReadCalls returns the read receipt calls, in order.
+func (s *FakeSession) MarkReadCalls() []MarkReadCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]MarkReadCall(nil), s.markReads...)
+}
+
+// PairPhoneCalls returns the pairing code calls, in order.
+func (s *FakeSession) PairPhoneCalls() []PairPhoneCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PairPhoneCall(nil), s.pairPhones...)
+}
+
 // EmitMessage forwards msg to the sink, when one was configured.
 func (s *FakeSession) EmitMessage(msg session.InboundMessage) {
 	if s.sink != nil {
 		s.sink.OnMessage(context.Background(), msg)
+	}
+}
+
+// EmitMessageEdit forwards an edit to the sink, when one was configured.
+func (s *FakeSession) EmitMessageEdit(edit session.MessageEdit) {
+	if s.sink != nil {
+		s.sink.OnMessageEdit(context.Background(), edit)
+	}
+}
+
+// EmitMessageDelete forwards a delete to the sink, when one was configured.
+func (s *FakeSession) EmitMessageDelete(del session.MessageDelete) {
+	if s.sink != nil {
+		s.sink.OnMessageDelete(context.Background(), del)
 	}
 }
 

@@ -14,9 +14,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
 	"wzap/internal/app"
+	"wzap/internal/chatwoot/client"
+	"wzap/internal/chatwoot/contacts"
+	"wzap/internal/chatwoot/conversations"
+	"wzap/internal/chatwoot/import"
+	"wzap/internal/chatwoot/inbound"
+	"wzap/internal/chatwoot/mirror"
 	"wzap/internal/config"
 	"wzap/internal/events"
 	"wzap/internal/httpapi"
@@ -24,7 +31,10 @@ import (
 	"wzap/internal/instancelock"
 	"wzap/internal/media"
 	"wzap/internal/message"
+	"wzap/internal/model"
+	"wzap/internal/session"
 	"wzap/internal/session/whatsmeow"
+	"wzap/internal/storage"
 	"wzap/internal/storage/postgres"
 	"wzap/internal/version"
 	"wzap/internal/webhook"
@@ -66,8 +76,8 @@ func run(args []string) error {
 
 // serve runs the HTTP server until an interrupt or termination signal. The
 // shutdown drains the in-flight requests first, then stops the outbox, the
-// media cleaner, the webhook worker and finally the relay, all within
-// shutdownTimeout.
+// media cleaner, the webhook worker, the chatwoot mirror and the chatwoot
+// import scheduler, and finally the relay, all within shutdownTimeout.
 func serve() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -86,6 +96,10 @@ func serve() error {
 		return fmt.Errorf("connect database: %w", err)
 	}
 	defer pool.Close()
+
+	// The Chatwoot history-import pool is a process singleton; serve owns its
+	// single Close at shutdown.
+	defer chatimport.Close()
 
 	if cfg.AutoMigrate {
 		if err := postgres.Migrate(ctx, pool); err != nil {
@@ -147,6 +161,7 @@ func serve() error {
 	// from the DB outbox, NOT through Writer, so there is no double delivery.
 	webhookWorker := webhook.NewWorker(instances, webhook.Keys, webhook.Deliver, cfg.MaxMediaBytes, log)
 	webhookWriter := webhookWorker.Fanout(eventWriter)
+
 	runtime := app.NewRuntime(
 		instances, webhookWriter, message.NewReceipts(messageRepo, webhookWriter, cfg.MaxMediaBytes),
 		mediaStorage, cfg.PublicURL, cfg.MaxMediaBytes, log,
@@ -157,9 +172,135 @@ func serve() error {
 	}
 	defer func() { _ = sessions.Close() }()
 
+	// Chatwoot mirror: a READ-only JetStream consumer (durable
+	// "wzap-chatwoot") that reflects inbound events into Chatwoot. It is
+	// only wired when the connector is globally enabled; per-instance
+	// switches are enforced by the worker itself. The consumer never
+	// publishes, so there is no second relay. It is built after the session
+	// manager so pairing notices can fetch the live QR string at handle
+	// time through the session's in-memory pairing state.
+	//
+	// The config/correlation repositories are always wired (cheap pgx
+	// wrappers): the REST set/find and the open webhook need them to answer
+	// the global 400 gate and the disabled-with-empty-fields reads even
+	// when the mirror consumer stays down.
+	chatwootConfigs, chatwootMessages := postgres.NewChatwootRepositories(pool)
+	var mirrorWorker *mirror.Worker
+	// The history importer backs the manual REST trigger, the post-pairing
+	// auto import and the lost-messages cron. Without the import URI every
+	// run stays inert (0, nil) and the rest of the connector keeps working.
+	importer := &chatwootHistoryImporter{
+		configs:  chatwootConfigs,
+		sessions: sessions,
+		clientFor: func(connector model.ChatwootConfig) chatimport.InboxLister {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		},
+		notify: func(ctx context.Context, instanceID uuid.UUID, text string) error {
+			if mirrorWorker == nil {
+				return nil
+			}
+			return mirrorWorker.NotifyOperational(ctx, instanceID, text)
+		},
+		placeholder: cfg.Chatwoot.ImportPlaceholder,
+	}
+	if cfg.Chatwoot.Enabled {
+		clientFor := func(connector model.ChatwootConfig) mirror.ChatwootClient {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		}
+		// Boot-fail-closed: the worker abstracts the client behind an
+		// interface, but the resolvers need the concrete client. Validate the
+		// wiring once so a programming mistake fails boot with a clear error
+		// instead of panicking on the first event.
+		if _, ok := clientFor(model.ChatwootConfig{}).(*client.Client); !ok {
+			return fmt.Errorf("chatwoot mirror miswired: ClientFor must return *client.Client")
+		}
+		contactsFor := func(cli mirror.ChatwootClient, connector model.ChatwootConfig) mirror.ContactResolver {
+			concrete, ok := cli.(*client.Client)
+			if !ok {
+				return miswiredContactResolver{err: fmt.Errorf("chatwoot mirror miswired: contacts need *client.Client, got %T", cli)}
+			}
+			return contacts.New(concrete, connector, log)
+		}
+		conversationsFor := func(cli mirror.ChatwootClient, connector model.ChatwootConfig, inboxID int64) mirror.ConversationResolver {
+			concrete, ok := cli.(*client.Client)
+			if !ok {
+				return miswiredConversationResolver{err: fmt.Errorf("chatwoot mirror miswired: conversations need *client.Client, got %T", cli)}
+			}
+			return conversations.New(concrete, connector, inboxID, log)
+		}
+		mirrorWorker = mirror.New(mirror.Deps{
+			Conn:             nc,
+			Stream:           cfg.NATSStream,
+			Configs:          chatwootConfigs,
+			Messages:         chatwootMessages,
+			Media:            mediaStorage,
+			QR:               sessionQRProvider{sessions: sessions},
+			Global:           cfg.Chatwoot,
+			ClientFor:        clientFor,
+			ContactsFor:      contactsFor,
+			ConversationsFor: conversationsFor,
+			ImportTrigger: func(ctx context.Context, instanceID uuid.UUID) error {
+				_, err := importer.run(ctx, instanceID, time.Time{})
+				return err
+			},
+			Log: log,
+		})
+	}
+
+	// Chatwoot lost-messages cron: re-imports the recent history every 30
+	// minutes, covering what the live mirror missed. It stays down with the
+	// connector off and inert without the import URI.
+	var importScheduler *chatimport.Scheduler
+	if cfg.Chatwoot.Enabled {
+		importScheduler = chatimport.NewScheduler(chatimport.SchedulerDeps{
+			Instances: instances,
+			Configs:   chatwootConfigs,
+			Sessions:  sessions,
+			Run: func(ctx context.Context, instanceID uuid.UUID, since time.Time) (int, error) {
+				return importer.run(ctx, instanceID, since)
+			},
+			ClearCache: func(instanceID uuid.UUID) {
+				if mirrorWorker != nil {
+					mirrorWorker.Clear(instanceID)
+				}
+			},
+			Log: log,
+		})
+	}
+
 	service := instance.NewService(instances, sessions, mediaStorage, users, keys)
 	numbers := message.NewJIDResolver(sessions, postgres.NewJIDCacheRepository(pool), log)
 	messages := message.NewService(instances, numbers, messageRepo)
+
+	// Chatwoot inbound (capability wzap-chatwoot-inbound): the open webhook
+	// reuses message.Service.Enqueue (text/media via media.Storage after
+	// downloading data_url; quoted via correlation; private-note on
+	// failure), the session fakes surface (DeleteMessage/MarkRead/PairPhone
+	// for reverse-delete/template/mark-read and init:<number>), and the
+	// per-instance Chatwoot API for notes and operational confirmations. It
+	// has no background worker: handling is synchronous in the webhook
+	// route, so the shutdown order (HTTP drain, then outbox, cleaner,
+	// webhook worker, chatwoot mirror, import scheduler, relay last) is
+	// preserved with the mirror and the scheduler stopping before the relay.
+	var chatwootCache inbound.CacheClearer
+	if mirrorWorker != nil {
+		chatwootCache = mirrorWorker
+	}
+	inboundHandler := inbound.New(inbound.Deps{
+		Configs:      chatwootConfigs,
+		Correlations: chatwootMessages,
+		Instances:    service,
+		Enqueuer:     messages,
+		Media:        mediaStorage,
+		Sessions:     sessions,
+		Downloader:   inbound.NewHTTPDownloader(cfg.MaxMediaBytes),
+		Cache:        chatwootCache,
+		Global:       cfg.Chatwoot,
+		Log:          log,
+		ClientFor: func(connector model.ChatwootConfig) inbound.ChatwootAPI {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		},
+	})
 
 	// Restore the persisted sessions before serving and before the outbox
 	// starts claiming messages. Per-instance failures are reflected in
@@ -175,15 +316,23 @@ func serve() error {
 	outboxWorker := message.NewOutbox(messageRepo, sessions, webhookWriter, mediaStorage, log, cfg.OutboxWorkers, instancelock.New(), cfg.Humanize)
 
 	srv := httpapi.New(cfg, log, httpapi.Deps{
-		ReadyChecker: checker,
-		Instances:    service,
-		Numbers:      numbers,
-		Messages:     messages,
-		Idempotency:  idempotencyRepo,
-		Media:        mediaStorage,
-		Users:        users,
-		Keys:         keys,
-		JWTSecret:    cfg.JWTSecret,
+		ReadyChecker:     checker,
+		Instances:        service,
+		Numbers:          numbers,
+		Messages:         messages,
+		Idempotency:      idempotencyRepo,
+		Media:            mediaStorage,
+		Users:            users,
+		Keys:             keys,
+		JWTSecret:        cfg.JWTSecret,
+		ChatwootConfigs:  chatwootConfigs,
+		Chatwoot:         cfg.Chatwoot,
+		PublicURL:        cfg.PublicURL,
+		ChatwootInbound:  inboundHandler,
+		ChatwootImporter: importer,
+		ChatwootClientFor: func(connector model.ChatwootConfig) httpapi.ChatwootInboxClient {
+			return client.New(connector.URL, connector.Token, connector.AccountID)
+		},
 	})
 
 	// The workers do not derive from the signal context: SIGTERM must not stop
@@ -222,6 +371,26 @@ func serve() error {
 		webhookWorker.Run(webhookCtx)
 	}()
 
+	mirrorCtx, stopMirror := context.WithCancel(context.Background())
+	defer stopMirror()
+	mirrorDone := make(chan struct{})
+	go func() {
+		defer close(mirrorDone)
+		if mirrorWorker != nil {
+			mirrorWorker.Run(mirrorCtx)
+		}
+	}()
+
+	schedulerCtx, stopScheduler := context.WithCancel(context.Background())
+	defer stopScheduler()
+	schedulerDone := make(chan struct{})
+	go func() {
+		defer close(schedulerDone)
+		if importScheduler != nil {
+			importScheduler.Start(schedulerCtx)
+		}
+	}()
+
 	log.Info("wzap listening", "version", version.Version, "addr", cfg.HTTPAddr)
 
 	serveErr := make(chan error, 1)
@@ -239,6 +408,8 @@ func serve() error {
 			shutdownComponent{name: "outbox", stop: stopOutbox, done: outboxDone},
 			shutdownComponent{name: "media cleaner", stop: stopCleaner, done: cleanerDone},
 			shutdownComponent{name: "webhook worker", stop: stopWebhook, done: webhookDone},
+			shutdownComponent{name: "chatwoot mirror", stop: stopMirror, done: mirrorDone},
+			shutdownComponent{name: "chatwoot import scheduler", stop: stopScheduler, done: schedulerDone},
 			shutdownComponent{name: "event relay", stop: stopRelay, done: relayDone},
 		)
 		return fmt.Errorf("serve http: %w", err)
@@ -256,13 +427,16 @@ func serve() error {
 	// enqueue events. Only then the outbox stops sending, the cleaner stops
 	// deleting media, the webhook worker stops (dropping its pending queue
 	// without a drain: webhooks are best-effort and the shared budget belongs
-	// to the relay), and the relay stops last, after publishing the events
-	// those requests and the outbox enqueued. Every wait shares the shutdown
-	// deadline, so the whole sequence stays bounded.
+	// to the relay), the chatwoot mirror and the import scheduler stop (no
+	// new import starts while draining), and the relay stops last, after
+	// publishing the events those requests and the outbox enqueued. Every
+	// wait shares the shutdown deadline, so the whole sequence stays bounded.
 	stopComponents(shutdownCtx, log,
 		shutdownComponent{name: "outbox", stop: stopOutbox, done: outboxDone},
 		shutdownComponent{name: "media cleaner", stop: stopCleaner, done: cleanerDone},
 		shutdownComponent{name: "webhook worker", stop: stopWebhook, done: webhookDone},
+		shutdownComponent{name: "chatwoot mirror", stop: stopMirror, done: mirrorDone},
+		shutdownComponent{name: "chatwoot import scheduler", stop: stopScheduler, done: schedulerDone},
 		shutdownComponent{name: "event relay", stop: stopRelay, done: relayDone},
 	)
 
@@ -279,6 +453,92 @@ type shutdownComponent struct {
 	name string
 	stop context.CancelFunc
 	done <-chan struct{}
+}
+
+// chatwootHistoryImporter backs the history import triggers: the manual
+// POST /instances/{id}/chatwoot/import (ImportHistory), the post-pairing
+// auto import and the lost-messages cron (run with the window cut). Without
+// the import URI every run stays inert (0, nil); a disabled connector or a
+// missing session also imports nothing.
+type chatwootHistoryImporter struct {
+	configs     storage.ChatwootConfigRepository
+	sessions    session.Manager
+	clientFor   func(cfg model.ChatwootConfig) chatimport.InboxLister
+	notify      func(ctx context.Context, instanceID uuid.UUID, text string) error
+	placeholder bool
+}
+
+// ImportHistory runs the manual import of instanceID.
+func (a *chatwootHistoryImporter) ImportHistory(ctx context.Context, instanceID uuid.UUID) (int, error) {
+	return a.run(ctx, instanceID, time.Time{})
+}
+
+// run imports the feed snapshot of instanceID, cutting history older than
+// since when set (the lost-messages window; zero takes the full days_limit
+// window).
+func (a *chatwootHistoryImporter) run(ctx context.Context, instanceID uuid.UUID, since time.Time) (int, error) {
+	pool, ok := chatimport.Pool(ctx)
+	if !ok {
+		return 0, nil
+	}
+	cfg, err := a.configs.Get(ctx, instanceID)
+	if err != nil {
+		return 0, err
+	}
+	if cfg == nil || !cfg.Enabled {
+		return 0, nil
+	}
+	sess, ok := a.sessions.Get(instanceID)
+	if !ok {
+		return 0, fmt.Errorf("chatimport: run import: no session for instance %s", instanceID)
+	}
+	var poster func(ctx context.Context, text string) error
+	if a.notify != nil {
+		poster = func(ctx context.Context, text string) error {
+			return a.notify(ctx, instanceID, text)
+		}
+	}
+	return chatimport.RunImport(ctx, chatimport.RunDeps{
+		Pool:        pool,
+		Config:      *cfg,
+		Inboxes:     a.clientFor(*cfg),
+		Feed:        sess,
+		Placeholder: a.placeholder,
+		NewerThan:   since,
+		Poster:      poster,
+	})
+}
+
+// sessionQRProvider adapts the session manager to the mirror QRProvider:
+// pairing notices fetch the live QR string from the session's in-memory
+// pairing state at handle time. A missing session surfaces as a lookup
+// error, which the mirror degrades to the text-only notice.
+type sessionQRProvider struct{ sessions session.Manager }
+
+func (p sessionQRProvider) QRCode(ctx context.Context, instanceID uuid.UUID) (string, time.Time, error) {
+	sess, ok := p.sessions.Get(instanceID)
+	if !ok {
+		return "", time.Time{}, fmt.Errorf("qr provider: no session for instance %s", instanceID)
+	}
+	return sess.QR(ctx)
+}
+
+// miswiredContactResolver fails every resolution with the wiring error so a
+// factory type mistake never panics; the boot check in serve should already
+// have failed closed before the worker starts.
+type miswiredContactResolver struct{ err error }
+
+func (r miswiredContactResolver) Resolve(context.Context, string, bool, string, string, string) (*contacts.Contact, error) {
+	return nil, r.err
+}
+
+// miswiredConversationResolver fails every resolution with the wiring error so
+// a factory type mistake never panics; the boot check in serve should already
+// have failed closed before the worker starts.
+type miswiredConversationResolver struct{ err error }
+
+func (r miswiredConversationResolver) Resolve(context.Context, uuid.UUID, string, int64) (int64, error) {
+	return 0, r.err
 }
 
 // stopComponents stops the workers in order, waiting for each one within ctx so

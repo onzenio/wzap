@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats.go v1.53.1
 	github.com/pressly/goose/v3 v3.28.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.16.6
 	go.mau.fi/whatsmeow v0.0.0-20260909164725-b25a56d63729

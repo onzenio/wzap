@@ -26,11 +26,13 @@ var _ MediaPathResolver = (*media.Storage)(nil)
 
 // mediaOutboundPayload is the session body of a media message: the stored
 // caption and filename plus the mimetype resolved from the media row.
+// QuotedID is the WhatsApp id being replied to, omitted when not a quote.
 type mediaOutboundPayload struct {
 	Caption  string `json:"caption,omitempty"`
 	Filename string `json:"filename,omitempty"`
 	MimeType string `json:"mime_type"`
 	PTT      bool   `json:"ptt,omitempty"`
+	QuotedID string `json:"quoted_id,omitempty"`
 }
 
 // mediaSender loads the stored media of a message, derives the WhatsApp media
@@ -73,6 +75,7 @@ func (s mediaSender) Send(ctx context.Context, sess session.Session, msg model.O
 		Filename: filename,
 		MimeType: record.Mimetype,
 		PTT:      payload.PTT,
+		QuotedID: payload.QuotedID,
 	})
 	if err != nil {
 		return "", fmt.Errorf("media payload: %w", err)

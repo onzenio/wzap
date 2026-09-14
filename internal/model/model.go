@@ -104,3 +104,41 @@ type OutboxEvent struct {
 	CreatedAt   time.Time
 	PublishedAt *time.Time
 }
+
+// ChatwootConfig is the per-instance Chatwoot connector configuration. Token
+// is stored in clear text by design (encryption is a later version).
+type ChatwootConfig struct {
+	InstanceID          uuid.UUID
+	Enabled             bool
+	URL                 string
+	AccountID           string
+	Token               string
+	NameInbox           string
+	SignMsg             bool
+	SignDelimiter       string
+	ReopenConversation  bool
+	ConversationPending bool
+	MergeBrazilContacts bool
+	ImportContacts      bool
+	ImportMessages      bool
+	DaysLimit           int
+	AutoCreate          bool
+	Organization        string
+	Logo                string
+	IgnoreJIDs          []string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// ChatwootMessage correlates a WhatsApp message key with its Chatwoot mirror.
+// Rows are never purged; they disappear on instance DELETE via cascade.
+type ChatwootMessage struct {
+	InstanceID        uuid.UUID
+	WAKey             string
+	ChatwootMessageID int64
+	ConversationID    int64
+	InboxID           int64
+	ContactSourceID   string
+	IsRead            bool
+	CreatedAt         time.Time
+}

@@ -333,6 +333,63 @@ func TestEnqueueMediaRequiresMediaID(t *testing.T) {
 	}
 }
 
+func TestEnqueueTextCarriesQuotedID(t *testing.T) {
+	f := newServiceFixture(session.StatusConnected)
+
+	if _, err := f.service.Enqueue(context.Background(), f.instance, EnqueueInput{
+		Type:     TypeText,
+		To:       "5547988359190",
+		Text:     "resposta",
+		QuotedID: "WA-ORIG-1",
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	payload := decodePayload(t, f.messages.created[0])
+	if payload["text"] != "resposta" {
+		t.Errorf("payload.text = %v, want %q", payload["text"], "resposta")
+	}
+	if payload["quoted_id"] != "WA-ORIG-1" {
+		t.Errorf("payload.quoted_id = %v, want %q", payload["quoted_id"], "WA-ORIG-1")
+	}
+}
+
+func TestEnqueueTextOmitsQuotedIDWhenUnquoted(t *testing.T) {
+	f := newServiceFixture(session.StatusConnected)
+
+	if _, err := f.service.Enqueue(context.Background(), f.instance, EnqueueInput{
+		Type: TypeText,
+		To:   "5547988359190",
+		Text: "olá",
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	if payload := decodePayload(t, f.messages.created[0]); payload["quoted_id"] != nil {
+		t.Errorf("payload.quoted_id = %v, want absent for an unquoted message", payload["quoted_id"])
+	}
+}
+
+func TestEnqueueMediaCarriesQuotedID(t *testing.T) {
+	f := newServiceFixture(session.StatusConnected)
+	mediaID := uuid.New()
+
+	if _, err := f.service.Enqueue(context.Background(), f.instance, EnqueueInput{
+		Type:     TypeMedia,
+		To:       "5547988359190",
+		Caption:  "olha",
+		MediaID:  &mediaID,
+		QuotedID: "WA-ORIG-2",
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	payload := decodePayload(t, f.messages.created[0])
+	if payload["quoted_id"] != "WA-ORIG-2" {
+		t.Errorf("payload.quoted_id = %v, want %q", payload["quoted_id"], "WA-ORIG-2")
+	}
+}
+
 func TestEnqueueRejectsUnsupportedType(t *testing.T) {
 	f := newServiceFixture(session.StatusConnected)
 

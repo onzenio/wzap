@@ -33,6 +33,16 @@ func (SubjectNamespace) MessageStatus(instanceID uuid.UUID) string {
 	return subject(instanceID, "message.status")
 }
 
+// MessageEdit is the subject of the inbound message edit events.
+func (SubjectNamespace) MessageEdit(instanceID uuid.UUID) string {
+	return subject(instanceID, "message.edit")
+}
+
+// MessageDelete is the subject of the inbound message delete events.
+func (SubjectNamespace) MessageDelete(instanceID uuid.UUID) string {
+	return subject(instanceID, "message.delete")
+}
+
 func subject(instanceID uuid.UUID, suffix string) string {
 	return subjectPrefix + instanceID.String() + "." + suffix
 }
