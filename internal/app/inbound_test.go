@@ -274,7 +274,7 @@ func TestRuntimeOnMessageMediaWithinLimitIsSavedAndReferenced(t *testing.T) {
 	if payload.Media.Size != int64(len(data)) {
 		t.Errorf("payload.media.size = %d, want %d", payload.Media.Size, len(data))
 	}
-	if want := "https://wzap.example.com/api/v1/media/" + mediaID.String(); payload.Media.URL != want {
+	if want := "https://wzap.example.com/media/" + mediaID.String(); payload.Media.URL != want {
 		t.Errorf("payload.media.url = %q, want %q", payload.Media.URL, want)
 	}
 	if !payload.Media.ExpiresAt.Equal(expires) {
@@ -307,7 +307,7 @@ func TestRuntimeOnMessageMediaURLTrimsTrailingSlash(t *testing.T) {
 	if payload.Media == nil {
 		t.Fatal("payload.media = nil, want the stored media")
 	}
-	if want := "https://wzap.example.com/api/v1/media/" + mediaID.String(); payload.Media.URL != want {
+	if want := "https://wzap.example.com/media/" + mediaID.String(); payload.Media.URL != want {
 		t.Errorf("payload.media.url = %q, want %q", payload.Media.URL, want)
 	}
 }

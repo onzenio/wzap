@@ -131,7 +131,7 @@ func TestAuthLoginSuccess(t *testing.T) {
 	user := seedAuthUser(t, "admin@example.com", "s3cret-password", "admin")
 	srv := authTestServer(t, newFakeUserRepository(user), "http://localhost:8080")
 
-	rec := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login",
+	rec := serveAuth(t, srv, http.MethodPost, "/auth/login",
 		`{"email":"admin@example.com","password":"s3cret-password"}`)
 
 	if rec.Code != http.StatusOK {
@@ -184,7 +184,7 @@ func TestAuthLoginSetsSecureCookieForHTTPS(t *testing.T) {
 	user := seedAuthUser(t, "admin@example.com", "s3cret-password", "admin")
 	srv := authTestServer(t, newFakeUserRepository(user), "https://wzap.example.com")
 
-	rec := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login",
+	rec := serveAuth(t, srv, http.MethodPost, "/auth/login",
 		`{"email":"admin@example.com","password":"s3cret-password"}`)
 
 	if rec.Code != http.StatusOK {
@@ -199,9 +199,9 @@ func TestAuthLoginRejectsInvalidCredentials(t *testing.T) {
 	user := seedAuthUser(t, "admin@example.com", "s3cret-password", "admin")
 	srv := authTestServer(t, newFakeUserRepository(user), "")
 
-	unknown := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login",
+	unknown := serveAuth(t, srv, http.MethodPost, "/auth/login",
 		`{"email":"nobody@example.com","password":"s3cret-password"}`)
-	wrong := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login",
+	wrong := serveAuth(t, srv, http.MethodPost, "/auth/login",
 		`{"email":"admin@example.com","password":"wrong-password"}`)
 
 	for name, rec := range map[string]*httptest.ResponseRecorder{"unknown email": unknown, "wrong password": wrong} {
@@ -236,7 +236,7 @@ func TestAuthLoginRejectsInvalidCredentials(t *testing.T) {
 func TestAuthLoginRejectsMalformedBody(t *testing.T) {
 	srv := authTestServer(t, newFakeUserRepository(), "")
 
-	rec := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login", `{"email":`)
+	rec := serveAuth(t, srv, http.MethodPost, "/auth/login", `{"email":`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -250,12 +250,12 @@ func TestAuthMe(t *testing.T) {
 	user := seedAuthUser(t, "me@example.com", "s3cret-password", "user")
 	srv := authTestServer(t, newFakeUserRepository(user), "")
 
-	login := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login",
+	login := serveAuth(t, srv, http.MethodPost, "/auth/login",
 		`{"email":"me@example.com","password":"s3cret-password"}`)
 	cookie := sessionCookie(t, login)
 
 	t.Run("valid session", func(t *testing.T) {
-		rec := serveAuth(t, srv, http.MethodGet, "/api/v1/auth/me", "", cookie)
+		rec := serveAuth(t, srv, http.MethodGet, "/auth/me", "", cookie)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
@@ -274,7 +274,7 @@ func TestAuthMe(t *testing.T) {
 	})
 
 	t.Run("without session", func(t *testing.T) {
-		rec := serveAuth(t, srv, http.MethodGet, "/api/v1/auth/me", "")
+		rec := serveAuth(t, srv, http.MethodGet, "/auth/me", "")
 
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusUnauthorized, rec.Body.String())
@@ -284,7 +284,7 @@ func TestAuthMe(t *testing.T) {
 	t.Run("tampered token", func(t *testing.T) {
 		bad := *cookie
 		bad.Value += "x"
-		rec := serveAuth(t, srv, http.MethodGet, "/api/v1/auth/me", "", &bad)
+		rec := serveAuth(t, srv, http.MethodGet, "/auth/me", "", &bad)
 
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusUnauthorized, rec.Body.String())
@@ -299,7 +299,7 @@ func TestAuthMe(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sign expired token: %v", err)
 		}
-		rec := serveAuth(t, srv, http.MethodGet, "/api/v1/auth/me", "",
+		rec := serveAuth(t, srv, http.MethodGet, "/auth/me", "",
 			&http.Cookie{Name: auth.SessionCookieName, Value: expired})
 
 		if rec.Code != http.StatusUnauthorized {
@@ -312,15 +312,15 @@ func TestAuthLogoutInvalidatesSession(t *testing.T) {
 	user := seedAuthUser(t, "me@example.com", "s3cret-password", "user")
 	srv := authTestServer(t, newFakeUserRepository(user), "")
 
-	login := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/login",
+	login := serveAuth(t, srv, http.MethodPost, "/auth/login",
 		`{"email":"me@example.com","password":"s3cret-password"}`)
 	cookie := sessionCookie(t, login)
 
-	if rec := serveAuth(t, srv, http.MethodGet, "/api/v1/auth/me", "", cookie); rec.Code != http.StatusOK {
+	if rec := serveAuth(t, srv, http.MethodGet, "/auth/me", "", cookie); rec.Code != http.StatusOK {
 		t.Fatalf("me before logout = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	logout := serveAuth(t, srv, http.MethodPost, "/api/v1/auth/logout", "", cookie)
+	logout := serveAuth(t, srv, http.MethodPost, "/auth/logout", "", cookie)
 	if logout.Code != http.StatusOK {
 		t.Fatalf("logout status = %d, want %d (body %q)", logout.Code, http.StatusOK, logout.Body.String())
 	}
@@ -344,7 +344,7 @@ func TestAuthLogoutInvalidatesSession(t *testing.T) {
 
 	// The client jar holds no usable session afterwards: /auth/me without the
 	// cookie is unauthorized and re-adds no session.
-	after := serveAuth(t, srv, http.MethodGet, "/api/v1/auth/me", "")
+	after := serveAuth(t, srv, http.MethodGet, "/auth/me", "")
 	if after.Code != http.StatusUnauthorized {
 		t.Fatalf("me after logout = %d, want %d (body %q)", after.Code, http.StatusUnauthorized, after.Body.String())
 	}

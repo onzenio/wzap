@@ -114,7 +114,7 @@ func (r *Runtime) attachMedia(ctx context.Context, payload *messagePayload, msg 
 
 // mediaURL builds the authenticated download URL of stored media.
 func (r *Runtime) mediaURL(id uuid.UUID) string {
-	return strings.TrimSuffix(r.publicURL, "/") + "/api/v1/media/" + id.String()
+	return strings.TrimSuffix(r.publicURL, "/") + "/media/" + id.String()
 }
 
 // messagePayload is the JSON body of an inbound message event. Reply/quoting

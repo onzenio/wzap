@@ -33,42 +33,57 @@ type Deps struct {
 	JWTSecret    string
 }
 
-// New builds the HTTP server with the middleware chain, the health endpoints
-// and the authenticated /api/v1 group.
+// New builds the HTTP server with the middleware chain, the exact public
+// health endpoints and the authenticated API sub-mux mounted at /.
+//
+// The only exact publics are GET /healthz and GET /readyz. /swagger/ and
+// /manager/ (plus static assets) stay unregistered until tasks 5.2 and 6.6
+// own them, so no stub is mounted for them here.
 func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(deps.ReadyChecker, log))
 
+	// The legacy /api/v1 prefix is gone: every path under it answers the
+	// shared 404 envelope, with or without credential. This subtree pattern
+	// is more specific than "/" below, so it wins for legacy paths.
+	mux.Handle("/api/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Error(w, r, http.StatusNotFound, "not_found", "route not found")
+	}))
+
 	api := http.NewServeMux()
-	api.HandleFunc("POST /api/v1/instances", handleCreateInstance(deps.Instances))
-	api.HandleFunc("GET /api/v1/instances", handleListInstances(deps.Instances))
-	api.HandleFunc("GET /api/v1/instances/{id}", handleGetInstance(deps.Instances))
-	api.HandleFunc("PATCH /api/v1/instances/{id}", handleUpdateInstance(deps.Instances))
-	api.HandleFunc("DELETE /api/v1/instances/{id}", handleDeleteInstance(deps.Instances))
-	api.HandleFunc("POST /api/v1/instances/{id}/connect", handleConnectInstance(deps.Instances))
-	api.HandleFunc("POST /api/v1/instances/{id}/disconnect", handleDisconnectInstance(deps.Instances))
-	api.HandleFunc("GET /api/v1/instances/{id}/qr", handleQRInstance(deps.Instances))
-	api.HandleFunc("GET /api/v1/instances/{id}/status", handleInstanceStatus(deps.Instances))
-	api.HandleFunc("POST /api/v1/instances/{id}/numbers/check", handleCheckNumber(deps.Instances, deps.Numbers))
-	api.Handle("POST /api/v1/instances/{id}/messages/text", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendText(deps.Instances, deps.Messages)))
-	api.Handle("POST /api/v1/instances/{id}/messages/location", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendLocation(deps.Instances, deps.Messages)))
-	api.Handle("POST /api/v1/instances/{id}/messages/contact", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendContact(deps.Instances, deps.Messages)))
-	api.Handle("POST /api/v1/instances/{id}/messages/media", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendMedia(deps.Instances, deps.Messages, deps.Media, cfg.MaxMediaBytes)))
-	api.HandleFunc("GET /api/v1/instances/{id}/messages", handleListMessages(deps.Instances, deps.Messages))
-	api.HandleFunc("GET /api/v1/instances/{id}/messages/{message_id}", handleGetMessage(deps.Instances, deps.Messages))
-	api.HandleFunc("GET /api/v1/media/{id}", handleGetMedia(deps.Instances, deps.Media))
-	mux.Handle("/api/v1/", Authenticate(cfg.APIKey, deps.Users, deps.Keys, deps.JWTSecret)(envelopeFallback(api)))
+	api.HandleFunc("POST /instances", handleCreateInstance(deps.Instances))
+	api.HandleFunc("GET /instances", handleListInstances(deps.Instances))
+	api.HandleFunc("GET /instances/{id}", handleGetInstance(deps.Instances))
+	api.HandleFunc("PATCH /instances/{id}", handleUpdateInstance(deps.Instances))
+	api.HandleFunc("DELETE /instances/{id}", handleDeleteInstance(deps.Instances))
+	api.HandleFunc("POST /instances/{id}/connect", handleConnectInstance(deps.Instances))
+	api.HandleFunc("POST /instances/{id}/disconnect", handleDisconnectInstance(deps.Instances))
+	api.HandleFunc("GET /instances/{id}/qr", handleQRInstance(deps.Instances))
+	api.HandleFunc("GET /instances/{id}/status", handleInstanceStatus(deps.Instances))
+	api.HandleFunc("POST /instances/{id}/numbers/check", handleCheckNumber(deps.Instances, deps.Numbers))
+	api.Handle("POST /instances/{id}/messages/text", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendText(deps.Instances, deps.Messages)))
+	api.Handle("POST /instances/{id}/messages/location", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendLocation(deps.Instances, deps.Messages)))
+	api.Handle("POST /instances/{id}/messages/contact", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendContact(deps.Instances, deps.Messages)))
+	api.Handle("POST /instances/{id}/messages/media", Idempotency(deps.Idempotency, log, cfg.MaxMediaBytes)(handleSendMedia(deps.Instances, deps.Messages, deps.Media, cfg.MaxMediaBytes)))
+	api.HandleFunc("GET /instances/{id}/messages", handleListMessages(deps.Instances, deps.Messages))
+	api.HandleFunc("GET /instances/{id}/messages/{message_id}", handleGetMessage(deps.Instances, deps.Messages))
+	api.HandleFunc("GET /media/{id}", handleGetMedia(deps.Instances, deps.Media))
+	// "/" is the least-specific outer pattern, so Authenticate runs before
+	// the api mux sees the request: an unknown path without credential
+	// answers 401 here, while the same path with a valid credential falls
+	// through to the enveloped 404 of envelopeFallback.
+	mux.Handle("/", Authenticate(cfg.APIKey, deps.Users, deps.Keys, deps.JWTSecret)(envelopeFallback(api)))
 
 	// The session endpoints authenticate with the cookie, never with the
 	// apikey header, so they mount on the outer mux outside the Authenticate
-	// guard while keeping the current /api/v1 prefix.
+	// guard at their prefix-less paths.
 	secure := secureCookies(cfg.PublicURL)
 	authMux := http.NewServeMux()
-	authMux.HandleFunc("POST /api/v1/auth/login", handleLogin(deps.Users, deps.JWTSecret, secure))
-	authMux.HandleFunc("POST /api/v1/auth/logout", handleLogout(secure))
-	authMux.HandleFunc("GET /api/v1/auth/me", handleMe(deps.Users, deps.JWTSecret))
-	mux.Handle("/api/v1/auth/", envelopeFallback(authMux))
+	authMux.HandleFunc("POST /auth/login", handleLogin(deps.Users, deps.JWTSecret, secure))
+	authMux.HandleFunc("POST /auth/logout", handleLogout(secure))
+	authMux.HandleFunc("GET /auth/me", handleMe(deps.Users, deps.JWTSecret))
+	mux.Handle("/auth/", envelopeFallback(authMux))
 
 	return &http.Server{
 		Addr:              cfg.HTTPAddr,

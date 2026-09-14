@@ -210,20 +210,20 @@ func instanceRouteCases(target uuid.UUID, mediaID uuid.UUID) []struct {
 		path   string
 		body   string
 	}{
-		{name: "get one", method: http.MethodGet, path: "/api/v1/instances/" + target.String()},
-		{name: "update one", method: http.MethodPatch, path: "/api/v1/instances/" + target.String(), body: `{"name":"novo"}`},
-		{name: "delete one", method: http.MethodDelete, path: "/api/v1/instances/" + target.String()},
-		{name: "connect", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/connect"},
-		{name: "qr", method: http.MethodGet, path: "/api/v1/instances/" + target.String() + "/qr"},
-		{name: "status", method: http.MethodGet, path: "/api/v1/instances/" + target.String() + "/status"},
-		{name: "disconnect", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/disconnect"},
-		{name: "numbers check", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/numbers/check", body: `{"phone":"5547988359190"}`},
-		{name: "send text", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/messages/text", body: `{"to":"5547988359190","text":"ola"}`},
-		{name: "send location", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/messages/location", body: `{"to":"5547988359190","latitude":-23.55,"longitude":-46.63}`},
-		{name: "send contact", method: http.MethodPost, path: "/api/v1/instances/" + target.String() + "/messages/contact", body: `{"to":"5547988359190","display_name":"Fulano","vcard":"BEGIN:VCARD"}`},
-		{name: "get message", method: http.MethodGet, path: "/api/v1/instances/" + target.String() + "/messages/" + msgID},
-		{name: "list messages", method: http.MethodGet, path: "/api/v1/instances/" + target.String() + "/messages"},
-		{name: "download media of instance", method: http.MethodGet, path: "/api/v1/media/" + mediaID.String()},
+		{name: "get one", method: http.MethodGet, path: "/instances/" + target.String()},
+		{name: "update one", method: http.MethodPatch, path: "/instances/" + target.String(), body: `{"name":"novo"}`},
+		{name: "delete one", method: http.MethodDelete, path: "/instances/" + target.String()},
+		{name: "connect", method: http.MethodPost, path: "/instances/" + target.String() + "/connect"},
+		{name: "qr", method: http.MethodGet, path: "/instances/" + target.String() + "/qr"},
+		{name: "status", method: http.MethodGet, path: "/instances/" + target.String() + "/status"},
+		{name: "disconnect", method: http.MethodPost, path: "/instances/" + target.String() + "/disconnect"},
+		{name: "numbers check", method: http.MethodPost, path: "/instances/" + target.String() + "/numbers/check", body: `{"phone":"5547988359190"}`},
+		{name: "send text", method: http.MethodPost, path: "/instances/" + target.String() + "/messages/text", body: `{"to":"5547988359190","text":"ola"}`},
+		{name: "send location", method: http.MethodPost, path: "/instances/" + target.String() + "/messages/location", body: `{"to":"5547988359190","latitude":-23.55,"longitude":-46.63}`},
+		{name: "send contact", method: http.MethodPost, path: "/instances/" + target.String() + "/messages/contact", body: `{"to":"5547988359190","display_name":"Fulano","vcard":"BEGIN:VCARD"}`},
+		{name: "get message", method: http.MethodGet, path: "/instances/" + target.String() + "/messages/" + msgID},
+		{name: "list messages", method: http.MethodGet, path: "/instances/" + target.String() + "/messages"},
+		{name: "download media of instance", method: http.MethodGet, path: "/media/" + mediaID.String()},
 	}
 }
 
@@ -269,7 +269,7 @@ func TestRBACInstanceKeyDeniedCollections(t *testing.T) {
 	srv := f.rbacServer(t)
 
 	t.Run("list all", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances", "", nil, f.keyA, nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances", "", nil, f.keyA, nil)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
 		}
@@ -279,7 +279,7 @@ func TestRBACInstanceKeyDeniedCollections(t *testing.T) {
 	})
 
 	t.Run("create", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodPost, "/api/v1/instances", `{"name":"loja"}`, nil, f.keyA, nil)
+		rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, nil, f.keyA, nil)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
 		}
@@ -346,7 +346,7 @@ func TestRBACRandomUUIDIsNotFound(t *testing.T) {
 					[][2]string{{"to", "5547988359190"}, {"type", "image"}},
 					"foto.jpg", "image/jpeg", []byte("bytes"))
 				req := httptest.NewRequest(http.MethodPost,
-					"/api/v1/instances/"+unknown.String()+"/messages/media", bytes.NewReader(body))
+					"/instances/"+unknown.String()+"/messages/media", bytes.NewReader(body))
 				req.Header.Set("Content-Type", formType)
 				if cred.cookie != nil {
 					req.AddCookie(cred.cookie)
@@ -393,7 +393,7 @@ func TestRBACListFiltersByOwner(t *testing.T) {
 	}
 
 	t.Run("user sees own only", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances", "", rbacSessionCookie(f.userATok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances", "", rbacSessionCookie(f.userATok), "", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
@@ -410,7 +410,7 @@ func TestRBACListFiltersByOwner(t *testing.T) {
 	})
 
 	t.Run("admin sees all", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances", "", rbacSessionCookie(f.adminTok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances", "", rbacSessionCookie(f.adminTok), "", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
@@ -423,7 +423,7 @@ func TestRBACListFiltersByOwner(t *testing.T) {
 	})
 
 	t.Run("global sees all", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances", "", nil, f.globalKey, nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances", "", nil, f.globalKey, nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
@@ -441,34 +441,34 @@ func TestRBACAdminAndOwnerReachInstance(t *testing.T) {
 	srv := f.rbacServer(t)
 
 	t.Run("owner reaches own", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances/"+f.instA.ID.String(), "", rbacSessionCookie(f.userATok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+f.instA.ID.String(), "", rbacSessionCookie(f.userATok), "", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
 	})
 
 	t.Run("admin reaches other's", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances/"+f.instB.ID.String(), "", rbacSessionCookie(f.adminTok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+f.instB.ID.String(), "", rbacSessionCookie(f.adminTok), "", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
 	})
 
 	t.Run("instance key reaches own", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances/"+f.instA.ID.String(), "", nil, f.keyA, nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+f.instA.ID.String(), "", nil, f.keyA, nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
 	})
 
 	t.Run("legacy visible to admin only", func(t *testing.T) {
-		if rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances/"+f.legacy.ID.String(), "", rbacSessionCookie(f.userATok), "", nil); rec.Code != http.StatusForbidden {
+		if rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+f.legacy.ID.String(), "", rbacSessionCookie(f.userATok), "", nil); rec.Code != http.StatusForbidden {
 			t.Errorf("user on legacy: status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
 		}
-		if rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances/"+f.legacy.ID.String(), "", rbacSessionCookie(f.adminTok), "", nil); rec.Code != http.StatusOK {
+		if rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+f.legacy.ID.String(), "", rbacSessionCookie(f.adminTok), "", nil); rec.Code != http.StatusOK {
 			t.Errorf("admin on legacy: status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
-		if rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/instances/"+f.legacy.ID.String(), "", nil, f.globalKey, nil); rec.Code != http.StatusOK {
+		if rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+f.legacy.ID.String(), "", nil, f.globalKey, nil); rec.Code != http.StatusOK {
 			t.Errorf("global on legacy: status = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
 		}
 	})
@@ -477,7 +477,7 @@ func TestRBACAdminAndOwnerReachInstance(t *testing.T) {
 func TestRBACMediaDownload(t *testing.T) {
 	f := newRBACFixture(t)
 	srv := f.rbacServer(t)
-	path := "/api/v1/media/" + f.mediaID.String()
+	path := "/media/" + f.mediaID.String()
 
 	t.Run("owner of other instance is forbidden", func(t *testing.T) {
 		rec := serveRBAC(t, srv, http.MethodGet, path, "", rbacSessionCookie(f.userATok), "", nil)
@@ -504,7 +504,7 @@ func TestRBACMediaDownload(t *testing.T) {
 	})
 
 	t.Run("missing media is not found", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodGet, "/api/v1/media/"+uuid.NewString(), "", rbacSessionCookie(f.userATok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodGet, "/media/"+uuid.NewString(), "", rbacSessionCookie(f.userATok), "", nil)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusNotFound, rec.Body.String())
 		}
@@ -519,7 +519,7 @@ func TestRBACMediaUploadGating(t *testing.T) {
 	upload := func(t *testing.T, target uuid.UUID, cookie *http.Cookie, apiKey string) *httptest.ResponseRecorder {
 		t.Helper()
 		body, formType := multipartBody(t, fields, "foto.jpg", "image/jpeg", []byte("bytes"))
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+target.String()+"/messages/media", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/instances/"+target.String()+"/messages/media", bytes.NewReader(body))
 		req.Header.Set("Content-Type", formType)
 		if cookie != nil {
 			req.AddCookie(cookie)
@@ -577,21 +577,21 @@ func TestRBACCreateGating(t *testing.T) {
 	)
 
 	t.Run("user may create", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodPost, "/api/v1/instances", `{"name":"loja"}`, rbacSessionCookie(f.userATok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, rbacSessionCookie(f.userATok), "", nil)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusCreated, rec.Body.String())
 		}
 	})
 
 	t.Run("admin may create", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodPost, "/api/v1/instances", `{"name":"loja"}`, rbacSessionCookie(f.adminTok), "", nil)
+		rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, rbacSessionCookie(f.adminTok), "", nil)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusCreated, rec.Body.String())
 		}
 	})
 
 	t.Run("instance key may not create", func(t *testing.T) {
-		rec := serveRBAC(t, srv, http.MethodPost, "/api/v1/instances", `{"name":"loja"}`, nil, f.keyA, nil)
+		rec := serveRBAC(t, srv, http.MethodPost, "/instances", `{"name":"loja"}`, nil, f.keyA, nil)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
 		}

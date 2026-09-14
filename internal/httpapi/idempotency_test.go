@@ -126,7 +126,7 @@ func (f *fakeIdempotency) putRecord(record model.IdempotencyRecord) {
 // idempotencyRequest builds a POST with an idempotency key for instance id. An
 // empty key omits the header.
 func idempotencyRequest(id uuid.UUID, key, body string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/text", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/instances/"+id.String()+"/messages/text", strings.NewReader(body))
 	req.SetPathValue("id", id.String())
 	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
@@ -482,7 +482,7 @@ func TestIdempotencyRejectsOversizedKey(t *testing.T) {
 
 func TestIdempotencySkipsUnparseableInstanceID(t *testing.T) {
 	repo := newFakeIdempotency()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/not-a-uuid/messages/text", strings.NewReader(`{"to":"5547"}`))
+	req := httptest.NewRequest(http.MethodPost, "/instances/not-a-uuid/messages/text", strings.NewReader(`{"to":"5547"}`))
 	req.SetPathValue("id", "not-a-uuid")
 	req.Header.Set(idempotencyKeyHeader, "key-1")
 	calls := 0
@@ -502,7 +502,7 @@ func TestIdempotencySkipsUnparseableInstanceID(t *testing.T) {
 
 func TestIdempotencySkipsNonPost(t *testing.T) {
 	repo := newFakeIdempotency()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+uuid.NewString()+"/messages", nil)
+	req := httptest.NewRequest(http.MethodGet, "/instances/"+uuid.NewString()+"/messages", nil)
 	req.SetPathValue("id", uuid.NewString())
 	req.Header.Set(idempotencyKeyHeader, "key-1")
 	calls := 0
@@ -569,7 +569,7 @@ func TestFingerprintCoversMethodRouteAndBody(t *testing.T) {
 		t.Error("different bodies share a fingerprint")
 	}
 
-	otherPath := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/location", strings.NewReader(`{"to":"5547","text":"hi"}`))
+	otherPath := httptest.NewRequest(http.MethodPost, "/instances/"+id.String()+"/messages/location", strings.NewReader(`{"to":"5547","text":"hi"}`))
 	otherPath.SetPathValue("id", id.String())
 	otherPathFingerprint, _, err := fingerprintRequest(otherPath, testMultipartBytes)
 	if err != nil {
@@ -617,7 +617,7 @@ func multipartRequest(t *testing.T, id uuid.UUID, fields [][2]string, filename, 
 	t.Helper()
 	body, formType := multipartBody(t, fields, filename, contentType, []byte(fileContent))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+id.String()+"/messages/media", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/instances/"+id.String()+"/messages/media", bytes.NewReader(body))
 	req.SetPathValue("id", id.String())
 	req.Header.Set("Content-Type", formType)
 	return req

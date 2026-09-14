@@ -158,7 +158,7 @@ func TestInstancesCreate(t *testing.T) {
 		return created, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances",
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances",
 		`{"name":"loja","external_ref":"crm-1"}`)
 
 	if rec.Code != http.StatusCreated {
@@ -184,7 +184,7 @@ func TestInstancesCreateDuplicateExternalRef(t *testing.T) {
 		return nil, instance.ErrExternalRefTaken
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances",
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances",
 		`{"name":"loja","external_ref":"crm-1"}`)
 
 	if rec.Code != http.StatusConflict {
@@ -198,7 +198,7 @@ func TestInstancesCreateDuplicateExternalRef(t *testing.T) {
 func TestInstancesCreateRejectsInvalidBody(t *testing.T) {
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances", `{"name":`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances", `{"name":`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -215,7 +215,7 @@ func TestInstancesCreateRejectsOversizedBody(t *testing.T) {
 	svc := &fakeInstanceService{}
 	oversized := `{"name":"` + strings.Repeat("a", maxJSONBodyBytes+1) + `"}`
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances", oversized)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances", oversized)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
@@ -241,7 +241,7 @@ func TestInstancesList(t *testing.T) {
 		return []model.Instance{first, second}, "cursor-1", nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -273,7 +273,7 @@ func TestInstancesList(t *testing.T) {
 func TestInstancesListPassesPagination(t *testing.T) {
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances?limit=7&cursor=abc", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances?limit=7&cursor=abc", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -307,7 +307,7 @@ func TestInstancesListLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := &fakeInstanceService{}
 
-			rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances"+tt.query, "")
+			rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances"+tt.query, "")
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -324,7 +324,7 @@ func TestInstancesListRejectsInvalidCursor(t *testing.T) {
 		return nil, "", instance.ErrInvalidCursor
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances?cursor=not-a-uuid", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances?cursor=not-a-uuid", "")
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -343,7 +343,7 @@ func TestInstancesGet(t *testing.T) {
 		return want, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+want.ID.String(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+want.ID.String(), "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -362,7 +362,7 @@ func TestInstancesGetNotFound(t *testing.T) {
 		return nil, instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+uuid.NewString(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -375,7 +375,7 @@ func TestInstancesGetNotFound(t *testing.T) {
 func TestInstancesGetRejectsMalformedID(t *testing.T) {
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/not-a-uuid", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/not-a-uuid", "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -404,7 +404,7 @@ func TestInstancesUpdate(t *testing.T) {
 		return updated, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/api/v1/instances/"+id.String(), `{"name":"novo"}`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/instances/"+id.String(), `{"name":"novo"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -427,7 +427,7 @@ func TestInstancesUpdateClearsExternalRef(t *testing.T) {
 		return &model.Instance{ID: id, Name: "loja", Status: "disconnected"}, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/api/v1/instances/"+id.String(), `{"external_ref":""}`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/instances/"+id.String(), `{"external_ref":""}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -439,7 +439,7 @@ func TestInstancesUpdateNotFound(t *testing.T) {
 		return nil, instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/api/v1/instances/"+uuid.NewString(), `{"name":"novo"}`)
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPatch, "/instances/"+uuid.NewString(), `{"name":"novo"}`)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -453,7 +453,7 @@ func TestInstancesDelete(t *testing.T) {
 	id := uuid.New()
 	svc := &fakeInstanceService{}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/api/v1/instances/"+id.String(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/instances/"+id.String(), "")
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
@@ -471,7 +471,7 @@ func TestInstancesDeleteNotFound(t *testing.T) {
 		return instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/api/v1/instances/"+uuid.NewString(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodDelete, "/instances/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -486,7 +486,7 @@ func TestInstancesInternalError(t *testing.T) {
 		return nil, context.DeadlineExceeded
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+uuid.NewString(), "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+uuid.NewString(), "")
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)

@@ -106,7 +106,7 @@ func TestAuthenticate(t *testing.T) {
 
 	newRequest := func(cookieValue, apiKey string, bearer string) *http.Request {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
+		req := httptest.NewRequest(http.MethodGet, "/instances", nil)
 		if cookieValue != "" {
 			req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookieValue})
 		}
@@ -250,7 +250,7 @@ func TestAuthenticate(t *testing.T) {
 
 func TestAuthenticateRejectsEmptyGlobalKey(t *testing.T) {
 	keys := &fakeAPIKeyRepository{byHash: map[string]uuid.UUID{}}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
+	req := httptest.NewRequest(http.MethodGet, "/instances", nil)
 	req.Header.Set("apikey", "some-key")
 	rec := httptest.NewRecorder()
 
@@ -346,7 +346,7 @@ func TestRecoverReturnsInternalErrorEnvelope(t *testing.T) {
 		panic("boom: database credentials are hunter2")
 	})))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances", nil)
+	req := httptest.NewRequest(http.MethodGet, "/instances", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -386,7 +386,7 @@ func TestLoggingRecordsRequestFields(t *testing.T) {
 		JSON(w, http.StatusCreated, map[string]string{"id": "abc"})
 	})))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances", nil)
+	req := httptest.NewRequest(http.MethodPost, "/instances", nil)
 	req.Header.Set("X-Request-Id", "log-correlation")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -397,7 +397,7 @@ func TestLoggingRecordsRequestFields(t *testing.T) {
 	for key, want := range map[string]any{
 		"request_id": "log-correlation",
 		"method":     "POST",
-		"path":       "/api/v1/instances",
+		"path":       "/instances",
 		"status":     float64(http.StatusCreated),
 	} {
 		if entry[key] != want {

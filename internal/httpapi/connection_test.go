@@ -31,7 +31,7 @@ func TestInstancesConnectStartsPairing(t *testing.T) {
 		return instance.ConnectResult{Status: session.StatusPairing, QRCode: "qr-123", QRExpiresAt: &expiresAt}, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances/"+id.String()+"/connect", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances/"+id.String()+"/connect", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -60,7 +60,7 @@ func TestInstancesConnectAlreadyConnected(t *testing.T) {
 		return instance.ConnectResult{Status: session.StatusConnected}, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances/"+id.String()+"/connect", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances/"+id.String()+"/connect", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -85,7 +85,7 @@ func TestInstancesConnectNotFound(t *testing.T) {
 		return instance.ConnectResult{}, instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances/"+uuid.NewString()+"/connect", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances/"+uuid.NewString()+"/connect", "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -105,7 +105,7 @@ func TestInstancesQR(t *testing.T) {
 		return instance.ConnectResult{Status: session.StatusPairing, QRCode: "qr-456", QRExpiresAt: &expiresAt}, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+id.String()+"/qr", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+id.String()+"/qr", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -131,7 +131,7 @@ func TestInstancesQRAlreadyConnected(t *testing.T) {
 		return instance.ConnectResult{}, instance.ErrAlreadyConnected
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+id.String()+"/qr", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+id.String()+"/qr", "")
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
@@ -155,7 +155,7 @@ func TestInstancesStatus(t *testing.T) {
 		return want, nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+want.ID.String()+"/status", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+want.ID.String()+"/status", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -185,7 +185,7 @@ func TestInstancesStatusNotFound(t *testing.T) {
 		return nil, instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/api/v1/instances/"+uuid.NewString()+"/status", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodGet, "/instances/"+uuid.NewString()+"/status", "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -201,10 +201,10 @@ func TestInstancesConnectionRejectsMalformedID(t *testing.T) {
 		method string
 		path   string
 	}{
-		{name: "connect", method: http.MethodPost, path: "/api/v1/instances/not-a-uuid/connect"},
-		{name: "qr", method: http.MethodGet, path: "/api/v1/instances/not-a-uuid/qr"},
-		{name: "status", method: http.MethodGet, path: "/api/v1/instances/not-a-uuid/status"},
-		{name: "disconnect", method: http.MethodPost, path: "/api/v1/instances/not-a-uuid/disconnect"},
+		{name: "connect", method: http.MethodPost, path: "/instances/not-a-uuid/connect"},
+		{name: "qr", method: http.MethodGet, path: "/instances/not-a-uuid/qr"},
+		{name: "status", method: http.MethodGet, path: "/instances/not-a-uuid/status"},
+		{name: "disconnect", method: http.MethodPost, path: "/instances/not-a-uuid/disconnect"},
 	}
 
 	for _, tt := range tests {
@@ -236,7 +236,7 @@ func TestInstancesDisconnect(t *testing.T) {
 		return nil
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances/"+id.String()+"/disconnect", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances/"+id.String()+"/disconnect", "")
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
@@ -254,7 +254,7 @@ func TestInstancesDisconnectNotFound(t *testing.T) {
 		return instance.ErrNotFound
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances/"+uuid.NewString()+"/disconnect", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances/"+uuid.NewString()+"/disconnect", "")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -269,7 +269,7 @@ func TestInstancesDisconnectFailure(t *testing.T) {
 		return errors.New("session still connected")
 	}}
 
-	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/api/v1/instances/"+uuid.NewString()+"/disconnect", "")
+	rec := serveJSON(t, instancesServer(t, svc), http.MethodPost, "/instances/"+uuid.NewString()+"/disconnect", "")
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
