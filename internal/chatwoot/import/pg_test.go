@@ -11,6 +11,12 @@ import (
 	"wzap/internal/session"
 )
 
+// resetPoolForTest drops the singleton between tests; tests only.
+func resetPoolForTest(t *testing.T) {
+	t.Helper()
+	Close()
+}
+
 // TestPoolInertWithoutURI is the guard: without WZAP_CHATWOOT_IMPORT_DB_URL
 // the import stays inert, Pool reports ok=false and zero network I/O is
 // attempted.
@@ -39,6 +45,25 @@ func TestPoolUnparseableURIStaysInert(t *testing.T) {
 	}
 	if pool != nil {
 		t.Fatalf("Pool() = %v, want nil for unparseable URI", pool)
+	}
+}
+
+// TestPoolRetriesAfterUnparseableURI guards against singleton poisoning: a
+// failed first attempt must not pin ok=false, so a later valid URI still
+// builds the pool.
+func TestPoolRetriesAfterUnparseableURI(t *testing.T) {
+	resetPoolForTest(t)
+	t.Cleanup(Close)
+
+	t.Setenv(envImportDBURL, "://bad-uri")
+	if pool, ok := Pool(context.Background()); ok || pool != nil {
+		t.Fatalf("Pool() with bad URI = (%v, %v), want (nil, false)", pool, ok)
+	}
+
+	t.Setenv(envImportDBURL, "postgres://127.0.0.1:1/nope?sslmode=disable")
+	pool, ok := Pool(context.Background())
+	if !ok || pool == nil {
+		t.Fatalf("Pool() after bad URI = (%v, %v), want pool with ok=true", pool, ok)
 	}
 }
 

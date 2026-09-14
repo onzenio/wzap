@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -22,8 +21,8 @@ const envImportDBURL = "WZAP_CHATWOOT_IMPORT_DB_URL"
 
 var (
 	poolMu   sync.Mutex
-	poolOnce sync.Once
 	pool     *pgxpool.Pool
+	poolInit bool
 )
 
 // Pool returns the process-wide Chatwoot import pool. ok=false means the
@@ -31,29 +30,31 @@ var (
 // I/O was attempted. The pool is lazy: a syntactically valid but unreachable
 // URI still reports ok=true and surfaces as an operation error on first use.
 //
-// The singleton binds to the first non-empty URI seen in the process; the
-// service URI is static at boot, so this never rebinds in production. SSL
-// follows the URI: verification is only skipped when the URI itself asks for
-// it (for example sslmode=disable), same regime as the Evolution import.
+// The singleton binds to the first successfully parsed URI seen in the
+// process; the service URI is static at boot, so this never rebinds in
+// production. A failed (unparseable) first attempt leaves the singleton
+// uninitialized so the next call retries. SSL follows the URI: verification
+// is only skipped when the URI itself asks for it (for example
+// sslmode=disable), same regime as the Evolution import.
 func Pool(ctx context.Context) (*pgxpool.Pool, bool) {
 	uri := strings.TrimSpace(os.Getenv(envImportDBURL))
 	if uri == "" {
 		return nil, false
 	}
-	poolOnce.Do(func() {
-		p, err := pgxpool.New(ctx, uri)
-		if err != nil {
-			return
-		}
-		poolMu.Lock()
-		pool = p
-		poolMu.Unlock()
-	})
 	poolMu.Lock()
 	defer poolMu.Unlock()
-	if pool == nil {
+	if poolInit {
+		if pool == nil {
+			return nil, false
+		}
+		return pool, true
+	}
+	p, err := pgxpool.New(ctx, uri)
+	if err != nil {
 		return nil, false
 	}
+	pool = p
+	poolInit = true
 	return pool, true
 }
 
@@ -67,11 +68,5 @@ func Close() {
 		pool.Close()
 		pool = nil
 	}
-	poolOnce = sync.Once{}
-}
-
-// resetPoolForTest drops the singleton between tests; tests only.
-func resetPoolForTest(t *testing.T) {
-	t.Helper()
-	Close()
+	poolInit = false
 }
