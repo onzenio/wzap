@@ -28,6 +28,8 @@ type Deps struct {
 	Messages     MessageService
 	Idempotency  storage.IdempotencyRepository
 	Media        MediaStore
+	Users        storage.UserRepository
+	JWTSecret    string
 }
 
 // New builds the HTTP server with the middleware chain, the health endpoints
@@ -56,6 +58,16 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	api.HandleFunc("GET /api/v1/instances/{id}/messages/{message_id}", handleGetMessage(deps.Messages))
 	api.HandleFunc("GET /api/v1/media/{id}", handleGetMedia(deps.Media))
 	mux.Handle("/api/v1/", Auth(cfg.APIKey)(envelopeFallback(api)))
+
+	// The session endpoints authenticate with the cookie, never with the
+	// service token, so they mount on the outer mux outside the Auth guard
+	// while keeping the current /api/v1 prefix.
+	secure := secureCookies(cfg.PublicURL)
+	authMux := http.NewServeMux()
+	authMux.HandleFunc("POST /api/v1/auth/login", handleLogin(deps.Users, deps.JWTSecret, secure))
+	authMux.HandleFunc("POST /api/v1/auth/logout", handleLogout(secure))
+	authMux.HandleFunc("GET /api/v1/auth/me", handleMe(deps.Users, deps.JWTSecret))
+	mux.Handle("/api/v1/auth/", envelopeFallback(authMux))
 
 	return &http.Server{
 		Addr:              cfg.HTTPAddr,

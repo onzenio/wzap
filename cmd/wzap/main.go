@@ -121,6 +121,7 @@ func serve() error {
 	}
 
 	instances := postgres.NewInstanceRepository(pool)
+	users := postgres.NewUserRepository(pool)
 	messageRepo := postgres.NewMessageRepository(pool)
 	idempotencyRepo := postgres.NewIdempotencyRepository(pool)
 	outbox := postgres.NewEventOutboxRepository(pool)
@@ -164,6 +165,8 @@ func serve() error {
 		Messages:     messages,
 		Idempotency:  idempotencyRepo,
 		Media:        mediaStorage,
+		Users:        users,
+		JWTSecret:    cfg.JWTSecret,
 	})
 
 	// The workers do not derive from the signal context: SIGTERM must not stop
