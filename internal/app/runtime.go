@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -110,9 +111,17 @@ func (r *Runtime) OnConnection(ctx context.Context, instanceID uuid.UUID, status
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := applyConnection(ctx, r.instances, instanceID, status, jid, reason); err != nil {
+	// The JID itself is never logged: only whether it is present.
+	r.log.DebugContext(ctx, "connection change received",
+		"instance_id", instanceID, "status", status, "jid_present", jid != "", "reason", reason)
+
+	if err := applyConnection(ctx, r.log, r.instances, instanceID, status, jid, reason); err != nil {
 		r.log.ErrorContext(ctx, "record connection change",
 			"instance_id", instanceID, "status", status, "error", err)
+		if errors.Is(err, storage.ErrNotFound) {
+			r.log.WarnContext(ctx, "skip connection event for unknown instance",
+				"instance_id", instanceID, "status", status)
+		}
 		return
 	}
 
@@ -134,7 +143,7 @@ func (r *Runtime) OnConnection(ctx context.Context, instanceID uuid.UUID, status
 // update, so a concurrent PATCH cannot be overwritten with stale columns. The
 // JID is kept while it is unknown so a transient failure keeps the paired
 // identity, and last_connected_at is stamped on every transition to connected.
-func applyConnection(ctx context.Context, instances storage.InstanceRepository, instanceID uuid.UUID, status session.Status, jid, reason string) error {
+func applyConnection(ctx context.Context, log *slog.Logger, instances storage.InstanceRepository, instanceID uuid.UUID, status session.Status, jid, reason string) error {
 	var connectedAt *time.Time
 	if status == session.StatusConnected {
 		now := time.Now().UTC()
@@ -143,6 +152,10 @@ func applyConnection(ctx context.Context, instances storage.InstanceRepository, 
 
 	if err := instances.SetConnectionState(ctx, instanceID, string(status), jid, reason, connectedAt); err != nil {
 		return fmt.Errorf("set instance connection: %w", err)
+	}
+	if log != nil {
+		log.DebugContext(ctx, "connection state recorded",
+			"instance_id", instanceID, "status", status, "connected_at_set", connectedAt != nil)
 	}
 	return nil
 }
