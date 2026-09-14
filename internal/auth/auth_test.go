@@ -135,6 +135,20 @@ func TestParseTokenRejects(t *testing.T) {
 		t.Fatalf("MintToken: %v", err)
 	}
 
+	// Tamper the first byte of the signature segment: unlike the last
+	// base64 char (whose low bits are padding and may decode identically),
+	// flipping full-data bits always changes the HMAC and must be rejected.
+	segments := strings.Split(token, ".")
+	tampered := token[:len(token)-1] + "x"
+	if len(segments) == 3 && len(segments[2]) > 0 {
+		first := segments[2][0]
+		rep := byte('x')
+		if first == 'x' {
+			rep = 'y'
+		}
+		tampered = segments[0] + "." + segments[1] + "." + string([]byte{rep}) + segments[2][1:]
+	}
+
 	for _, tt := range []struct {
 		name  string
 		token string
@@ -143,7 +157,7 @@ func TestParseTokenRejects(t *testing.T) {
 	}{
 		{name: "wrong secret", token: token, secret: "wrong-secret"},
 		{name: "malformed", token: "not-a-token", secret: "right-secret"},
-		{name: "tampered", token: token[:len(token)-1] + "x", secret: "right-secret"},
+		{name: "tampered", token: tampered, secret: "right-secret"},
 		{name: "empty", token: "", secret: "right-secret"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
