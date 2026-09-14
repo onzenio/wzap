@@ -177,13 +177,17 @@ type ConnectionNotice struct {
 
 // Deps wires a Worker. ClientFor, ContactsFor and ConversationsFor build the
 // per-instance Chatwoot stack from the instance connector configuration;
-// production passes client.New, contacts.New and conversations.New.
+// production passes client.New, contacts.New and conversations.New. QR is an
+// optional live QR lookup (production: the session manager); pairing notices
+// whose QRImage arrived empty consult it at handle time, and a nil QR keeps
+// the text-only behavior.
 type Deps struct {
 	Conn             *nats.Conn
 	Stream           string
 	Configs          storage.ChatwootConfigRepository
 	Messages         storage.ChatwootMessageRepository
 	Media            MediaStore
+	QR               QRProvider
 	Global           config.Chatwoot
 	ClientFor        func(cfg model.ChatwootConfig) ChatwootClient
 	ContactsFor      func(cli ChatwootClient, cfg model.ChatwootConfig) ContactResolver
@@ -200,6 +204,7 @@ type Worker struct {
 	configs          storage.ChatwootConfigRepository
 	messages         storage.ChatwootMessageRepository
 	media            MediaStore
+	qr               QRProvider
 	global           config.Chatwoot
 	clientFor        func(cfg model.ChatwootConfig) ChatwootClient
 	contactsFor      func(cli ChatwootClient, cfg model.ChatwootConfig) ContactResolver
@@ -241,6 +246,7 @@ func New(deps Deps) *Worker {
 		configs:          deps.Configs,
 		messages:         deps.Messages,
 		media:            deps.Media,
+		qr:               deps.QR,
 		global:           deps.Global,
 		clientFor:        deps.ClientFor,
 		contactsFor:      deps.ContactsFor,
@@ -539,7 +545,11 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 
 	content := connectionText(notice)
 	sourceID := waSourceID("connection/" + eventID.String())
-	if len(notice.QRImage) > 0 {
+	qrImage := notice.QRImage
+	if len(qrImage) == 0 && notice.Status == "pairing" {
+		qrImage = w.pairingQRImage(ctx, log, instanceID)
+	}
+	if len(qrImage) > 0 {
 		_, err = rt.cli.CreateMessageWithAttachment(ctx, conversationID, client.CreateMessageWithAttachmentRequest{
 			Content:           content,
 			MessageType:       client.MessageTypeIncoming,
@@ -547,7 +557,7 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 			SourceID:          sourceID,
 			FileName:          "qrcode.png",
 			ContentType:       "image/png",
-			File:              notice.QRImage,
+			File:              qrImage,
 		})
 	} else {
 		_, err = rt.cli.CreateMessage(ctx, conversationID, client.CreateMessageRequest{
@@ -564,6 +574,31 @@ func (w *Worker) HandleConnection(ctx context.Context, instanceID, eventID uuid.
 	w.stampNotice(instanceID, notice.Status)
 	w.markSeen(eventID)
 	return nil
+}
+
+// pairingQRImage fetches the live pairing QR string of the instance and
+// renders it as PNG bytes. Any failure (no provider, no session, expired
+// code, encoder error) warns and returns nil so the caller posts the
+// text-only notice; the lookup never fails the worker.
+func (w *Worker) pairingQRImage(ctx context.Context, log *slog.Logger, instanceID uuid.UUID) []byte {
+	if w.qr == nil {
+		return nil
+	}
+	code, _, err := w.qr.QRCode(ctx, instanceID)
+	if err != nil {
+		log.Warn("pairing qr lookup failed, posting text-only notice", "error", err)
+		return nil
+	}
+	if code == "" {
+		log.Warn("pairing qr lookup returned empty code, posting text-only notice")
+		return nil
+	}
+	png, err := EncodeQR(code)
+	if err != nil {
+		log.Warn("pairing qr encoding failed, posting text-only notice", "error", err)
+		return nil
+	}
+	return png
 }
 
 // Run consumes the instance subjects through the durable consumer until ctx

@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats.go v1.53.1
 	github.com/pressly/goose/v3 v3.28.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20260909164725-b25a56d63729
 	golang.org/x/crypto v0.55.0
 	google.golang.org/protobuf v1.36.12

@@ -30,6 +30,7 @@ import (
 	"wzap/internal/media"
 	"wzap/internal/message"
 	"wzap/internal/model"
+	"wzap/internal/session"
 	"wzap/internal/session/whatsmeow"
 	"wzap/internal/storage/postgres"
 	"wzap/internal/version"
@@ -154,11 +155,23 @@ func serve() error {
 	webhookWorker := webhook.NewWorker(instances, webhook.Keys, webhook.Deliver, cfg.MaxMediaBytes, log)
 	webhookWriter := webhookWorker.Fanout(eventWriter)
 
+	runtime := app.NewRuntime(
+		instances, webhookWriter, message.NewReceipts(messageRepo, webhookWriter, cfg.MaxMediaBytes),
+		mediaStorage, cfg.PublicURL, cfg.MaxMediaBytes, log,
+	)
+	sessions, err := whatsmeow.NewManager(ctx, cfg.DatabaseURL, instances, log, runtime, cfg.MaxMediaBytes)
+	if err != nil {
+		return fmt.Errorf("session manager: %w", err)
+	}
+	defer func() { _ = sessions.Close() }()
+
 	// Chatwoot mirror: a READ-only JetStream consumer (durable
 	// "wzap-chatwoot") that reflects inbound events into Chatwoot. It is
 	// only wired when the connector is globally enabled; per-instance
 	// switches are enforced by the worker itself. The consumer never
-	// publishes, so there is no second relay.
+	// publishes, so there is no second relay. It is built after the session
+	// manager so pairing notices can fetch the live QR string at handle
+	// time through the session's in-memory pairing state.
 	var mirrorWorker *mirror.Worker
 	if cfg.Chatwoot.Enabled {
 		chatwootConfigs, chatwootMessages := postgres.NewChatwootRepositories(pool)
@@ -192,6 +205,7 @@ func serve() error {
 			Configs:          chatwootConfigs,
 			Messages:         chatwootMessages,
 			Media:            mediaStorage,
+			QR:               sessionQRProvider{sessions: sessions},
 			Global:           cfg.Chatwoot,
 			ClientFor:        clientFor,
 			ContactsFor:      contactsFor,
@@ -199,15 +213,6 @@ func serve() error {
 			Log:              log,
 		})
 	}
-	runtime := app.NewRuntime(
-		instances, webhookWriter, message.NewReceipts(messageRepo, webhookWriter, cfg.MaxMediaBytes),
-		mediaStorage, cfg.PublicURL, cfg.MaxMediaBytes, log,
-	)
-	sessions, err := whatsmeow.NewManager(ctx, cfg.DatabaseURL, instances, log, runtime, cfg.MaxMediaBytes)
-	if err != nil {
-		return fmt.Errorf("session manager: %w", err)
-	}
-	defer func() { _ = sessions.Close() }()
 
 	service := instance.NewService(instances, sessions, mediaStorage, users, keys)
 	numbers := message.NewJIDResolver(sessions, postgres.NewJIDCacheRepository(pool), log)
@@ -343,6 +348,20 @@ type shutdownComponent struct {
 	name string
 	stop context.CancelFunc
 	done <-chan struct{}
+}
+
+// sessionQRProvider adapts the session manager to the mirror QRProvider:
+// pairing notices fetch the live QR string from the session's in-memory
+// pairing state at handle time. A missing session surfaces as a lookup
+// error, which the mirror degrades to the text-only notice.
+type sessionQRProvider struct{ sessions session.Manager }
+
+func (p sessionQRProvider) QRCode(ctx context.Context, instanceID uuid.UUID) (string, time.Time, error) {
+	sess, ok := p.sessions.Get(instanceID)
+	if !ok {
+		return "", time.Time{}, fmt.Errorf("qr provider: no session for instance %s", instanceID)
+	}
+	return sess.QR(ctx)
 }
 
 // miswiredContactResolver fails every resolution with the wiring error so a
