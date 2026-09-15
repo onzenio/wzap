@@ -1,7 +1,13 @@
 <script setup lang="ts">
+import type { TableRow } from '@nuxt/ui'
+import { useMediaQuery } from '@vueuse/core'
 import { ApiError } from '~/composables/useApi'
+import { useInstancesTable } from '~/composables/useInstancesTable'
 import CreateInstanceModal from '~/components/instances/CreateInstanceModal.vue'
-import InstanceStatusBadge from '~/components/instances/InstanceStatusBadge.vue'
+import InstancesTableJidCell from '~/components/instances/InstancesTableJidCell.vue'
+import InstancesTableNameCell from '~/components/instances/InstancesTableNameCell.vue'
+import InstancesTableOwnerCell from '~/components/instances/InstancesTableOwnerCell.vue'
+import InstancesTableStatusCell from '~/components/instances/InstancesTableStatusCell.vue'
 import type { CreatedInstance, Instance } from '~/types/api'
 
 const { t } = useI18n()
@@ -17,16 +23,105 @@ const failure = ref<string | null>(null)
 const createOpen = ref(false)
 const ownerEmails = ref<Record<string, string>>({})
 
+const { columns, sorting, globalFilter, pagination, tableState } = useInstancesTable(items, ownerEmails, isAdmin)
+
+// Client-side viewport mirrors the old cards (owner hidden below md, JID
+// below lg). useMediaQuery is mobile-first on SSR (false until mount), so the
+// first paint already hides both columns on small screens.
+const isMdViewport = useMediaQuery('(min-width: 768px)')
+const isLgViewport = useMediaQuery('(min-width: 1024px)')
+
+// The admin-only marker travels as untyped column meta (see
+// useInstancesTable); read it with a cast, never by importing @tanstack/*.
+function isAdminOnly(columnId: string): boolean {
+  const column = columns.value.find(entry => entry.id === columnId)
+  return (column?.meta as unknown as { ifAdmin?: boolean } | undefined)?.ifAdmin ?? false
+}
+
+const columnVisibility = computed<Record<string, boolean>>(() => ({
+  owner: (!isAdminOnly('owner') || isAdmin.value) && isMdViewport.value,
+  whatsapp_jid: isLgViewport.value
+}))
+
+// Client-side engine over the accumulated cursor pages (no new API calls):
+// the shared global-filter predicate from the composable selects rows, the
+// page orders name/status, then slices the current page. UTable renders the
+// slice as-is (no v-model:sorting/global-filter/pagination) so a single
+// engine owns ordering — TanStack's row models stay out of the loop because
+// UTable v4 ships no getPaginationRowModel and @tanstack/* is not importable
+// (pnpm strict, no new dependency by design).
+const filteredItems = computed(() => {
+  const filterFn = tableState.value.globalFilterFn
+  return items.value.filter(item => filterFn({ original: item }, 'name', globalFilter.value))
+})
+
+const sortedFilteredItems = computed(() => {
+  const current = sorting.value[0]
+  if (!current || (current.id !== 'name' && current.id !== 'status')) {
+    return [...filteredItems.value]
+  }
+  const direction = current.desc ? -1 : 1
+  return [...filteredItems.value].sort((a, b) => {
+    const left = current.id === 'status' ? a.status : a.name
+    const right = current.id === 'status' ? b.status : b.name
+    return left.localeCompare(right) * direction
+  })
+})
+
+const pageCount = computed(() => Math.max(1, Math.ceil(sortedFilteredItems.value.length / pagination.value.pageSize)))
+
+const pagedItems = computed(() => {
+  const start = pagination.value.pageIndex * pagination.value.pageSize
+  return sortedFilteredItems.value.slice(start, start + pagination.value.pageSize)
+})
+
+watch(globalFilter, () => {
+  pagination.value.pageIndex = 0
+})
+
+watch(sorting, () => {
+  pagination.value.pageIndex = 0
+})
+
+watch(pageCount, (count) => {
+  if (pagination.value.pageIndex > count - 1) {
+    pagination.value.pageIndex = count - 1
+  }
+})
+
+function toggleSort(columnId: string) {
+  const current = sorting.value[0]
+  sorting.value = [{ id: columnId, desc: current?.id === columnId ? !current.desc : false }]
+}
+
+function sortIcon(columnId: string): string {
+  const current = sorting.value[0]
+  if (current?.id !== columnId) {
+    return 'i-lucide-arrow-up-down'
+  }
+  return current.desc ? 'i-lucide-arrow-down-wide-narrow' : 'i-lucide-arrow-up-narrow-wide'
+}
+
+// Temporary literals, exactly the final English copy: Task 1.4 moves them to
+// instances.table.* in en.json and swaps these for t().
+const noResultsLabel = 'No instances match this search.'
+const loadedLabel = computed(() => `${items.value.length} loaded`)
+const pageLabel = computed(() => `Page ${pagination.value.pageIndex + 1} of ${pageCount.value}`)
+
+function sortActionLabel(columnId: string): string {
+  const current = sorting.value[0]
+  const nextDesc = current?.id === columnId && !current.desc
+  const column = columnId === 'status' ? t('instances.columns.status') : t('instances.columns.name')
+  return nextDesc ? `Sort ${column} descending` : `Sort ${column} ascending`
+}
+
+function onSelectRow(_event: Event, row: TableRow<Instance>) {
+  navigateTo(`/instances/${row.original.id}`)
+}
+
 useSeoMeta({
   title: 'Instances'
 })
-
-function ownerLabel(instance: Instance): string {
-  if (!instance.owner_user_id) {
-    return t('common.notSet')
-  }
-  return ownerEmails.value[instance.owner_user_id] ?? instance.owner_user_id.slice(0, 8)
-}
 
 async function loadOwners() {
   if (!isAdmin.value) {
@@ -136,35 +231,79 @@ await loadFirst()
       </UEmpty>
 
       <div v-else class="flex flex-col gap-3">
-        <UCard
-          v-for="instance in items"
-          :key="instance.id"
-          class="cursor-pointer transition hover:border-primary"
-          @click="navigateTo(`/instances/${instance.id}`)"
+        <UInput
+          v-model="globalFilter"
+          icon="i-lucide-search"
+          placeholder="Search by name or external ref"
+        />
+
+        <p class="text-sm text-muted">
+          {{ loadedLabel }}
+        </p>
+
+        <UTable
+          :data="pagedItems"
+          :columns="columns"
+          :column-visibility="columnVisibility"
+          :empty="noResultsLabel"
+          :ui="{ tr: 'cursor-pointer' }"
+          @select="onSelectRow"
         >
-          <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <div class="min-w-0 flex-1">
-              <p class="truncate font-medium text-highlighted">
-                {{ instance.name }}
-              </p>
-              <p v-if="instance.external_ref" class="truncate text-sm text-muted">
-                {{ instance.external_ref }}
-              </p>
-            </div>
-            <InstanceStatusBadge :status="instance.status" />
-            <dl v-if="isAdmin" class="hidden text-sm md:block">
-              <dt class="text-muted">
-                {{ t('instances.columns.owner') }}
-              </dt>
-              <dd class="max-w-48 truncate text-highlighted">
-                {{ ownerLabel(instance) }}
-              </dd>
-            </dl>
-            <p v-if="instance.whatsapp_jid" class="hidden font-mono text-sm text-muted lg:block">
-              {{ instance.whatsapp_jid }}
-            </p>
-          </div>
-        </UCard>
+          <template #name-header>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              class="-mx-2.5"
+              :label="t('instances.columns.name')"
+              :icon="sortIcon('name')"
+              :aria-label="sortActionLabel('name')"
+              @click="toggleSort('name')"
+            />
+          </template>
+
+          <template #status-header>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              class="-mx-2.5"
+              :label="t('instances.columns.status')"
+              :icon="sortIcon('status')"
+              :aria-label="sortActionLabel('status')"
+              @click="toggleSort('status')"
+            />
+          </template>
+
+          <template #name-cell="{ row }">
+            <InstancesTableNameCell :instance="row.original" />
+          </template>
+
+          <template #status-cell="{ row }">
+            <InstancesTableStatusCell :status="row.original.status" />
+          </template>
+
+          <template #owner-cell="{ row }">
+            <InstancesTableOwnerCell :instance="row.original" :email="ownerEmails[row.original.owner_user_id ?? '']" />
+          </template>
+
+          <template #whatsapp_jid-cell="{ row }">
+            <InstancesTableJidCell :instance="row.original" />
+          </template>
+        </UTable>
+
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-sm text-muted">
+            {{ pageLabel }}
+          </p>
+          <UPagination
+            v-if="pageCount > 1"
+            :page="pagination.pageIndex + 1"
+            :items-per-page="pagination.pageSize"
+            :total="sortedFilteredItems.length"
+            @update:page="pagination.pageIndex = $event - 1"
+          />
+        </div>
 
         <div v-if="nextCursor !== ''" class="flex justify-center pt-2">
           <UButton
