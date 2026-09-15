@@ -164,7 +164,7 @@ func pinnedDialer(ctx context.Context, network, addr string) (net.Conn, error) {
 			return nil, fmt.Errorf("webhook dial rejected: host %q resolves to blocked address", host)
 		}
 	}
-	if !(isLoopbackHost(trimmed) || allLoopback(ips)) {
+	if !isLoopbackHost(trimmed) && !allLoopback(ips) {
 		for _, ip := range ips {
 			if isWebhookBlockedIP(ip) {
 				return nil, fmt.Errorf("webhook dial rejected: host %q resolves to non-public address", host)
