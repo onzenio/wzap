@@ -1,5 +1,9 @@
 <script setup lang="ts">
 import { ApiError } from '~/composables/useApi'
+import { useAccountsTable } from '~/composables/useAccountsTable'
+import AccountsTableActionsCell from '~/components/accounts/AccountsTableActionsCell.vue'
+import AccountsTableQuotaCell from '~/components/accounts/AccountsTableQuotaCell.vue'
+import AccountsTableRoleCell from '~/components/accounts/AccountsTableRoleCell.vue'
 import type { AccountRole, AccountUser } from '~/types/api'
 
 // Account management is admin-only: the sidebar hides this screen for user
@@ -18,6 +22,86 @@ if (!isAdmin.value) {
 const users = ref<AccountUser[]>([])
 const pending = ref(true)
 const failure = ref<string | null>(null)
+
+const { columns, sorting, globalFilter, pagination } = useAccountsTable(users)
+
+// Client-side engine over the loaded users (no new API calls): email filter,
+// email/role string ordering plus numeric quota ordering, then the current
+// page slice. UTable renders the slice as-is so a single engine owns ordering
+// (same renderer-only pattern as pages/instances/index.vue — UTable v4 ships
+// no getPaginationRowModel and @tanstack/* is not importable).
+const filteredUsers = computed(() => {
+  const needle = globalFilter.value.trim().toLowerCase()
+  if (needle === '') {
+    return [...users.value]
+  }
+  return users.value.filter(user => user.email.toLowerCase().includes(needle))
+})
+
+const sortedFilteredUsers = computed(() => {
+  const current = sorting.value[0]
+  if (!current || (current.id !== 'email' && current.id !== 'role' && current.id !== 'instance_quota')) {
+    return [...filteredUsers.value]
+  }
+  const direction = current.desc ? -1 : 1
+  return [...filteredUsers.value].sort((a, b) => {
+    // Quota sorts numerically over instance_quota (0 = Unlimited sorts as 0),
+    // never over the display string returned by the column accessorFn.
+    if (current.id === 'instance_quota') {
+      return (a.instance_quota - b.instance_quota) * direction
+    }
+    const left = current.id === 'role' ? a.role : a.email
+    const right = current.id === 'role' ? b.role : b.email
+    return left.localeCompare(right, 'en') * direction
+  })
+})
+
+const pageCount = computed(() => Math.max(1, Math.ceil(sortedFilteredUsers.value.length / pagination.value.pageSize)))
+
+const pagedUsers = computed(() => {
+  const start = pagination.value.pageIndex * pagination.value.pageSize
+  return sortedFilteredUsers.value.slice(start, start + pagination.value.pageSize)
+})
+
+watch(globalFilter, () => {
+  pagination.value.pageIndex = 0
+})
+
+watch(sorting, () => {
+  pagination.value.pageIndex = 0
+})
+
+watch(pageCount, (count) => {
+  if (pagination.value.pageIndex > count - 1) {
+    pagination.value.pageIndex = count - 1
+  }
+})
+
+function toggleSort(columnId: string) {
+  const current = sorting.value[0]
+  sorting.value = [{ id: columnId, desc: current?.id === columnId ? !current.desc : false }]
+}
+
+function sortIcon(columnId: string): string {
+  const current = sorting.value[0]
+  if (current?.id !== columnId) {
+    return 'i-lucide-arrow-up-down'
+  }
+  return current.desc ? 'i-lucide-arrow-down-wide-narrow' : 'i-lucide-arrow-up-narrow-wide'
+}
+
+// Table copy lives in accounts.table.* (en.json); no UI literal stays here.
+const countLabel = computed(() => t('accounts.table.loadedCount', { count: users.value.length }))
+const pageLabel = computed(() => t('accounts.table.pageOf', { page: pagination.value.pageIndex + 1, pages: pageCount.value }))
+
+function sortActionLabel(columnId: string): string {
+  const current = sorting.value[0]
+  const nextDesc = current?.id === columnId && !current.desc
+  const column = columnId === 'role'
+    ? t('common.role')
+    : columnId === 'instance_quota' ? t('accounts.quotaLabel') : t('common.email')
+  return nextDesc ? t('accounts.table.sortDesc', { column }) : t('accounts.table.sortAsc', { column })
+}
 
 const createOpen = ref(false)
 const createEmail = ref('')
@@ -42,6 +126,9 @@ useSeoMeta({
   title: 'Accounts'
 })
 
+// Canonical quota display rule (quota 0 means unlimited), mirrored by
+// useAccountsTable and AccountsTableQuotaCell — keep all three in sync.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function quotaLabel(user: AccountUser): string {
   return user.instance_quota === 0 ? t('accounts.unlimited') : String(user.instance_quota)
 }
@@ -247,40 +334,89 @@ if (isAdmin.value) {
       </UEmpty>
 
       <div v-else class="flex flex-col gap-3">
-        <UCard
-          v-for="user in users"
-          :key="user.id"
+        <UInput
+          v-model="globalFilter"
+          icon="i-lucide-search"
+          :placeholder="t('accounts.table.search')"
+        />
+
+        <p class="text-sm text-muted">
+          {{ countLabel }}
+        </p>
+
+        <UTable
+          :data="pagedUsers"
+          :columns="columns"
+          :empty="t('accounts.table.noResults')"
         >
-          <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <div class="min-w-0 flex-1">
-              <p class="truncate font-medium text-highlighted">
-                {{ user.email }}
-              </p>
-              <p class="text-sm text-muted">
-                {{ t('accounts.quotaLabel') }}: {{ quotaLabel(user) }}
-              </p>
-            </div>
-            <UBadge variant="subtle">
-              {{ user.role }}
-            </UBadge>
-            <div class="flex gap-2">
-              <UButton
-                color="neutral"
-                variant="soft"
-                icon="i-lucide-pencil"
-                :label="t('accounts.quota.edit')"
-                @click="openQuota(user)"
-              />
-              <UButton
-                color="error"
-                variant="soft"
-                icon="i-lucide-trash-2"
-                :label="t('accounts.delete.action')"
-                @click="openDelete(user)"
-              />
-            </div>
-          </div>
-        </UCard>
+          <template #email-header>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              class="-mx-2.5"
+              :label="t('common.email')"
+              :icon="sortIcon('email')"
+              :aria-label="sortActionLabel('email')"
+              @click="toggleSort('email')"
+            />
+          </template>
+
+          <template #role-header>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              class="-mx-2.5"
+              :label="t('common.role')"
+              :icon="sortIcon('role')"
+              :aria-label="sortActionLabel('role')"
+              @click="toggleSort('role')"
+            />
+          </template>
+
+          <template #instance_quota-header>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              class="-mx-2.5"
+              :label="t('accounts.quotaLabel')"
+              :icon="sortIcon('instance_quota')"
+              :aria-label="sortActionLabel('instance_quota')"
+              @click="toggleSort('instance_quota')"
+            />
+          </template>
+
+          <template #role-cell="{ row }">
+            <AccountsTableRoleCell :user="row.original" />
+          </template>
+
+          <template #instance_quota-cell="{ row }">
+            <AccountsTableQuotaCell :user="row.original" />
+          </template>
+
+          <template #actions-cell="{ row }">
+            <AccountsTableActionsCell
+              :user="row.original"
+              @edit-quota="openQuota($event)"
+              @remove="openDelete($event)"
+            />
+          </template>
+        </UTable>
+
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-sm text-muted">
+            {{ pageLabel }}
+          </p>
+          <UPagination
+            v-if="pageCount > 1"
+            :page="pagination.pageIndex + 1"
+            :items-per-page="pagination.pageSize"
+            :total="sortedFilteredUsers.length"
+            @update:page="pagination.pageIndex = $event - 1"
+          />
+        </div>
       </div>
     </template>
   </UDashboardPanel>
