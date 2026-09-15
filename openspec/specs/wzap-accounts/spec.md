@@ -6,7 +6,7 @@ Contas humanas que operam o produto: quem instala administra, cada cliente tem
 sua conta, e toda instância pertence a um dono. Máquinas seguem autenticadas
 por API keys, nunca por login.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Contas e roles
 

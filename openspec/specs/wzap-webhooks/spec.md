@@ -6,7 +6,7 @@ Entrega de eventos por HTTP para sistemas externos por instância, no envelope
 versionado do barramento acrescido do evento cru, com credencial simples e
 reentrega limitada.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Configuração por instância
 

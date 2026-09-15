@@ -6,7 +6,7 @@ Credenciais de máquina para integrações e revenda: uma key global de operador
 e uma key por instância, resolvidas junto com a sessão de usuário no mesmo
 controle de acesso.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Header apikey
 
