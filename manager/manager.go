@@ -21,7 +21,12 @@ import (
 	"time"
 )
 
-//go:embed .output/public
+// The `all:` prefix is load-bearing: plain `go:embed` silently skips
+// files and directories starting with "_" or ".", which would drop the
+// whole `_nuxt/` bundle (JS/CSS) and leave a blank page. Dotfiles stay
+// blocked at serve time by isHidden.
+//
+//go:embed all:.output/public
 var dist embed.FS
 
 const (
