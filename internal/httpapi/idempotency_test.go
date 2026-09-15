@@ -152,9 +152,9 @@ func serveIdempotency(repo storage.IdempotencyRepository, next http.Handler, req
 
 // countingHandler counts the calls and answers with status and body.
 func countingHandler(calls *int, status int, body string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*calls++
-		JSON(w, status, map[string]string{"message_id": body})
+		JSON(w, r, status, map[string]string{"message_id": body})
 	})
 }
 
@@ -384,7 +384,7 @@ func TestIdempotencyReleases503(t *testing.T) {
 			Error(w, r, http.StatusServiceUnavailable, "unavailable", "number resolution unavailable")
 			return
 		}
-		JSON(w, http.StatusAccepted, map[string]string{"message_id": "m1"})
+		JSON(w, r, http.StatusAccepted, map[string]string{"message_id": "m1"})
 	})
 
 	if rec := serveIdempotency(repo, handler, idempotencyRequest(id, "key-1", `{"to":"5547"}`)); rec.Code != http.StatusServiceUnavailable {
@@ -773,7 +773,7 @@ func TestFingerprintMultipartRestoresBodyForHandler(t *testing.T) {
 			content, _ := io.ReadAll(file)
 			gotFile = string(content)
 		}
-		JSON(w, http.StatusAccepted, map[string]string{"message_id": "m1"})
+		JSON(w, r, http.StatusAccepted, map[string]string{"message_id": "m1"})
 	})
 
 	rec := serveIdempotency(repo, handler, withIdempotencyKey(

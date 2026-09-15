@@ -75,7 +75,7 @@ func handleLogin(users storage.UserRepository, jwtSecret string, secure bool) ht
 			return
 		}
 		setSessionCookie(w, token, secure)
-		JSON(w, http.StatusOK, newIdentityResponse(user))
+		JSON(w, r, http.StatusOK, newIdentityResponse(user))
 	}
 }
 
@@ -90,9 +90,9 @@ func handleLogin(users storage.UserRepository, jwtSecret string, secure bool) ht
 // @Success 200 {object} logoutResponse "Status, wrapped in the data envelope"
 // @Router /auth/logout [post]
 func handleLogout(secure bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		clearSessionCookie(w, secure)
-		JSON(w, http.StatusOK, logoutResponse{Status: "ok"})
+		JSON(w, r, http.StatusOK, logoutResponse{Status: "ok"})
 	}
 }
 
@@ -130,7 +130,7 @@ func handleMe(users storage.UserRepository, jwtSecret string) http.HandlerFunc {
 			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		JSON(w, http.StatusOK, newIdentityResponse(user))
+		JSON(w, r, http.StatusOK, newIdentityResponse(user))
 	}
 }
 

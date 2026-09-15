@@ -151,7 +151,7 @@ func handleSendText(instances InstanceService, messages MessageService) http.Han
 			writeMessageError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusAccepted, newMessageAcceptedResponse(messageID))
+		JSON(w, r, http.StatusAccepted, newMessageAcceptedResponse(messageID))
 	}
 }
 
@@ -218,7 +218,7 @@ func handleSendLocation(instances InstanceService, messages MessageService) http
 			writeMessageError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusAccepted, newMessageAcceptedResponse(messageID))
+		JSON(w, r, http.StatusAccepted, newMessageAcceptedResponse(messageID))
 	}
 }
 
@@ -281,7 +281,7 @@ func handleSendContact(instances InstanceService, messages MessageService) http.
 			writeMessageError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusAccepted, newMessageAcceptedResponse(messageID))
+		JSON(w, r, http.StatusAccepted, newMessageAcceptedResponse(messageID))
 	}
 }
 
@@ -425,7 +425,7 @@ func handleSendMedia(instances InstanceService, messages MessageService, mediaSt
 			writeMessageError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusAccepted, newMessageAcceptedResponse(messageID))
+		JSON(w, r, http.StatusAccepted, newMessageAcceptedResponse(messageID))
 	}
 }
 
@@ -526,7 +526,7 @@ func handleGetMessage(instances InstanceService, messages MessageService) http.H
 			writeMessageError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusOK, newMessageResponse(found))
+		JSON(w, r, http.StatusOK, newMessageResponse(found))
 	}
 }
 
@@ -577,7 +577,7 @@ func handleListMessages(instances InstanceService, messages MessageService) http
 		for i := range items {
 			response.Items = append(response.Items, newMessageResponse(&items[i]))
 		}
-		JSON(w, http.StatusOK, response)
+		JSON(w, r, http.StatusOK, response)
 	}
 }
 

@@ -150,7 +150,7 @@ func handleCreateUser(users storage.UserRepository, defaultQuota int) http.Handl
 			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		JSON(w, http.StatusCreated, newUserQuotaResponse(created))
+		JSON(w, r, http.StatusCreated, newUserQuotaResponse(created))
 	}
 }
 
@@ -188,7 +188,7 @@ func handleListUsers(users storage.UserRepository) http.HandlerFunc {
 		for i := range stored {
 			response = append(response, newUserQuotaResponse(&stored[i]))
 		}
-		JSON(w, http.StatusOK, response)
+		JSON(w, r, http.StatusOK, response)
 	}
 }
 
@@ -236,7 +236,7 @@ func handleGetUser(users storage.UserRepository) http.HandlerFunc {
 			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		JSON(w, http.StatusOK, newUserQuotaResponse(stored))
+		JSON(w, r, http.StatusOK, newUserQuotaResponse(stored))
 	}
 }
 
@@ -300,7 +300,7 @@ func handleDeleteUser(users storage.UserRepository, keys storage.APIKeyRepositor
 			}
 			return
 		}
-		JSON(w, http.StatusNoContent, nil)
+		JSON(w, r, http.StatusNoContent, nil)
 	}
 }
 
@@ -390,7 +390,7 @@ func handleUpdateUserQuota(users storage.UserRepository) http.HandlerFunc {
 			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		JSON(w, http.StatusOK, userQuotaResponse{
+		JSON(w, r, http.StatusOK, userQuotaResponse{
 			ID:            updated.ID.String(),
 			Email:         updated.Email,
 			Role:          updated.Role,

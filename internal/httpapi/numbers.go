@@ -91,9 +91,9 @@ func handleCheckNumber(instances InstanceService, numbers NumberResolver) http.H
 		jid, err := numbers.Resolve(r.Context(), id, phone)
 		switch {
 		case err == nil:
-			JSON(w, http.StatusOK, numberCheckResponse{Exists: true, JID: jid, Normalized: normalized})
+			JSON(w, r, http.StatusOK, numberCheckResponse{Exists: true, JID: jid, Normalized: normalized})
 		case errors.Is(err, message.ErrNumberNotFound):
-			JSON(w, http.StatusOK, numberCheckResponse{Exists: false, Normalized: normalized})
+			JSON(w, r, http.StatusOK, numberCheckResponse{Exists: false, Normalized: normalized})
 		case errors.Is(err, message.ErrResolverUnavailable):
 			Error(w, r, http.StatusServiceUnavailable, "unavailable", "number resolution unavailable")
 		default:

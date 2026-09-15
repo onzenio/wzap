@@ -101,10 +101,10 @@ func TestChatwootCommandAuthenticated(t *testing.T) {
 
 type fakeChatwootCommander struct {
 	fakeChatwootInbound
-	calls         int
-	command       string
-	conversation  int64
-	status        int
+	calls        int
+	command      string
+	conversation int64
+	status       int
 }
 
 func (f *fakeChatwootCommander) HandleCommand(_ context.Context, _ uuid.UUID, command string, conversationID int64) (int, error) {

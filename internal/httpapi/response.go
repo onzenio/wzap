@@ -20,9 +20,13 @@ type errorBody struct {
 	Message string `json:"message"`
 }
 
-// JSON writes data as a JSON envelope with the given status. No-content
-// responses are written without a body.
-func JSON(w http.ResponseWriter, status int, data any) {
+// JSON writes data as a JSON envelope with the given status, echoing the
+// request id like Error so every success carries X-Request-Id even outside
+// the RequestID middleware. No-content responses are written without a body.
+func JSON(w http.ResponseWriter, r *http.Request, status int, data any) {
+	if id := RequestIDFromContext(r.Context()); id != "" {
+		w.Header().Set(requestIDHeader, id)
+	}
 	if status == http.StatusNoContent {
 		w.WriteHeader(status)
 		return

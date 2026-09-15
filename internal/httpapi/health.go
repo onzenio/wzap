@@ -146,8 +146,8 @@ type detailedReadyChecker interface {
 // @Param X-Request-Id header string false "Correlation id, echoed back"
 // @Success 200 {string} string "Enveloped {\"status\": \"ok\"}"
 // @Router /healthz [get]
-func handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	JSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleReadyz reports readiness from the configured checker: 200 while every
@@ -199,9 +199,9 @@ func handleReadyz(checker ReadyChecker, log *slog.Logger) http.HandlerFunc {
 			log.WarnContext(ctx, "readiness check failed",
 				"request_id", RequestIDFromContext(ctx),
 				"error", errors.Join(failures...))
-			JSON(w, http.StatusServiceUnavailable, readiness{Status: "unready", Checks: checks})
+			JSON(w, r, http.StatusServiceUnavailable, readiness{Status: "unready", Checks: checks})
 			return
 		}
-		JSON(w, http.StatusOK, readiness{Status: "ready", Checks: checks})
+		JSON(w, r, http.StatusOK, readiness{Status: "ready", Checks: checks})
 	}
 }

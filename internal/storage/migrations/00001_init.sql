@@ -73,3 +73,11 @@ CREATE TABLE event_outbox (
   published_at timestamptz
 );
 CREATE INDEX event_outbox_pending_idx ON event_outbox (created_at) WHERE published_at IS NULL;
+
+-- +goose Down
+DROP TABLE event_outbox;
+DROP TABLE media;
+DROP TABLE contacts;
+DROP TABLE idempotency_keys;
+DROP TABLE message_queue;
+DROP TABLE instances;

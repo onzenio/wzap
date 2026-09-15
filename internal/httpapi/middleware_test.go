@@ -390,8 +390,8 @@ func TestRecoverPassesThroughNormalResponses(t *testing.T) {
 func TestLoggingRecordsRequestFields(t *testing.T) {
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
-	handler := RequestID(Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		JSON(w, http.StatusCreated, map[string]string{"id": "abc"})
+	handler := RequestID(Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		JSON(w, r, http.StatusCreated, map[string]string{"id": "abc"})
 	})))
 
 	req := httptest.NewRequest(http.MethodPost, "/instances", nil)

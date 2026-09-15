@@ -208,7 +208,7 @@ func handleCreateInstance(instances InstanceService, users storage.UserRepositor
 			return
 		}
 		webhook.Keys.Store(created.ID, key)
-		JSON(w, http.StatusCreated, newCreateInstanceResponse(created, key))
+		JSON(w, r, http.StatusCreated, newCreateInstanceResponse(created, key))
 	}
 }
 
@@ -323,7 +323,7 @@ func handleListInstances(instances InstanceService) http.HandlerFunc {
 		for i := range items {
 			response.Items = append(response.Items, newInstanceResponse(&items[i]))
 		}
-		JSON(w, http.StatusOK, response)
+		JSON(w, r, http.StatusOK, response)
 	}
 }
 
@@ -359,7 +359,7 @@ func handleGetInstance(instances InstanceService) http.HandlerFunc {
 			writeForbidden(w, r)
 			return
 		}
-		JSON(w, http.StatusOK, newInstanceResponse(found))
+		JSON(w, r, http.StatusOK, newInstanceResponse(found))
 	}
 }
 
@@ -420,7 +420,7 @@ func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusOK, newInstanceResponse(updated))
+		JSON(w, r, http.StatusOK, newInstanceResponse(updated))
 	}
 }
 
@@ -462,7 +462,7 @@ func handleDeleteInstance(instances InstanceService) http.HandlerFunc {
 			return
 		}
 		webhook.Keys.Clear(id)
-		JSON(w, http.StatusNoContent, nil)
+		JSON(w, r, http.StatusNoContent, nil)
 	}
 }
 

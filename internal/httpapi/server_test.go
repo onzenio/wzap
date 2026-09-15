@@ -170,14 +170,27 @@ func TestNewReturnsConfiguredServer(t *testing.T) {
 
 func TestJSONNoContentHasNoBody(t *testing.T) {
 	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/instances", nil)
 
-	JSON(rec, http.StatusNoContent, nil)
+	JSON(rec, req, http.StatusNoContent, nil)
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 	if rec.Body.Len() != 0 {
 		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+}
+
+func TestJSONEchoesRequestIDFromContext(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/instances", nil)
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "ctx-id-9"))
+	rec := httptest.NewRecorder()
+
+	JSON(rec, req, http.StatusOK, map[string]string{"id": "abc"})
+
+	if got := rec.Header().Get("X-Request-Id"); got != "ctx-id-9" {
+		t.Errorf("X-Request-Id = %q, want ctx-id-9", got)
 	}
 }
 

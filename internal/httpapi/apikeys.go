@@ -69,7 +69,7 @@ func handleRotateAPIKey(instances InstanceService, keys storage.APIKeyRepository
 			return
 		}
 		webhook.Keys.Store(stored.ID, key)
-		JSON(w, http.StatusOK, rotateAPIKeyResponse{ID: stored.ID.String(), InstanceAPIKey: key})
+		JSON(w, r, http.StatusOK, rotateAPIKeyResponse{ID: stored.ID.String(), InstanceAPIKey: key})
 	}
 }
 
@@ -118,7 +118,7 @@ func handleRevokeAPIKey(instances InstanceService, keys storage.APIKeyRepository
 			return
 		}
 		webhook.Keys.Clear(stored.ID)
-		JSON(w, http.StatusNoContent, nil)
+		JSON(w, r, http.StatusNoContent, nil)
 	}
 }
 

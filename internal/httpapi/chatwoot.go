@@ -184,7 +184,7 @@ func handleChatwootSet(instances InstanceService, configs ChatwootConfigStore, g
 		if saved.Enabled && saved.AutoCreate && clientFor != nil {
 			ensureChatwootInbox(r.Context(), clientFor, *saved, webhookURL)
 		}
-		JSON(w, http.StatusOK, newChatwootConfigResponse(saved, webhookURL))
+		JSON(w, r, http.StatusOK, newChatwootConfigResponse(saved, webhookURL))
 	}
 }
 
@@ -234,13 +234,13 @@ func handleChatwootGet(instances InstanceService, configs ChatwootConfigStore, g
 		cfg, err := configs.Get(r.Context(), id)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
-				JSON(w, http.StatusOK, newChatwootConfigResponse(&model.ChatwootConfig{InstanceID: id, IgnoreJIDs: []string{}}, chatwootWebhookURL(publicURL, id)))
+				JSON(w, r, http.StatusOK, newChatwootConfigResponse(&model.ChatwootConfig{InstanceID: id, IgnoreJIDs: []string{}}, chatwootWebhookURL(publicURL, id)))
 				return
 			}
 			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		JSON(w, http.StatusOK, newChatwootConfigResponse(cfg, chatwootWebhookURL(publicURL, id)))
+		JSON(w, r, http.StatusOK, newChatwootConfigResponse(cfg, chatwootWebhookURL(publicURL, id)))
 	}
 }
 
@@ -394,7 +394,7 @@ func handleChatwootImport(instances InstanceService, configs ChatwootConfigStore
 			Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		JSON(w, http.StatusAccepted, map[string]any{"imported": imported})
+		JSON(w, r, http.StatusAccepted, map[string]any{"imported": imported})
 	}
 }
 
@@ -457,7 +457,7 @@ func handleChatwootCommand(instances InstanceService, configs ChatwootConfigStor
 			Error(w, r, status, code, message)
 			return
 		}
-		JSON(w, http.StatusOK, map[string]any{"ok": true})
+		JSON(w, r, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 

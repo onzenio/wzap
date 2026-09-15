@@ -64,7 +64,7 @@ func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusOK, newConnectResponse(result))
+		JSON(w, r, http.StatusOK, newConnectResponse(result))
 	}
 }
 
@@ -108,7 +108,7 @@ func handleQRInstance(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusOK, newConnectResponse(result))
+		JSON(w, r, http.StatusOK, newConnectResponse(result))
 	}
 }
 
@@ -143,7 +143,7 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 			writeForbidden(w, r)
 			return
 		}
-		JSON(w, http.StatusOK, statusResponse{
+		JSON(w, r, http.StatusOK, statusResponse{
 			Status:          found.Status,
 			WhatsAppJID:     found.WhatsAppJID,
 			LastError:       found.LastError,
@@ -190,7 +190,7 @@ func handleDisconnectInstance(instances InstanceService) http.HandlerFunc {
 			writeInstanceError(w, r, err)
 			return
 		}
-		JSON(w, http.StatusNoContent, nil)
+		JSON(w, r, http.StatusNoContent, nil)
 	}
 }
 

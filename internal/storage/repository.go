@@ -187,5 +187,13 @@ type ChatwootConfigRepository interface {
 type ChatwootMessageRepository interface {
 	Put(ctx context.Context, msg model.ChatwootMessage) (*model.ChatwootMessage, error)
 	GetByWAKey(ctx context.Context, instanceID uuid.UUID, waKey string) (*model.ChatwootMessage, error)
+	// GetByChatwootID resolves a Chatwoot message back to its WhatsApp key
+	// for quoting, reverse delete and read markers. It reports ErrNotFound
+	// without a correlation.
+	GetByChatwootID(ctx context.Context, instanceID uuid.UUID, chatwootID int64) (*model.ChatwootMessage, error)
+	// LatestByConversation returns the newest correlation of a conversation,
+	// backing recipient resolution and mark-read. It reports ErrNotFound
+	// without one.
+	LatestByConversation(ctx context.Context, instanceID uuid.UUID, conversationID int64) (*model.ChatwootMessage, error)
 	DeleteByInstance(ctx context.Context, instanceID uuid.UUID) (int64, error)
 }

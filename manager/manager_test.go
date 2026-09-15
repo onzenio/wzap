@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +12,6 @@ import (
 func fixtureFS() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":             {Data: []byte("<html>wzap manager</html>")},
-		"200.html":               {Data: []byte("<html>wzap manager</html>")},
 		"app.js":                 {Data: []byte("console.log(1)")},
 		"assets/style.css":       {Data: []byte("body{}")},
 		"assets/logo.svg":        {Data: []byte("<svg></svg>")},
@@ -129,4 +129,36 @@ func TestEmbeddedDist(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
+	// Regression guard: the Nuxt bundle lives under `_nuxt/`, which plain
+	// `go:embed` silently drops (underscore prefix). Without it the console
+	// loads index.html but renders a blank page (all JS/CSS 404).
+	var bundle string
+	_ = fs.WalkDir(mustDistFS(t), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || bundle != "" {
+			return nil
+		}
+		if strings.HasPrefix(p, "_nuxt/") && strings.HasSuffix(p, ".js") {
+			bundle = p
+		}
+		return nil
+	})
+	if bundle == "" {
+		t.Fatal("embedded build holds no _nuxt/*.js bundle; the console would render blank (check the go:embed all: prefix)")
+	}
+	rec = get(t, h, "/manager/"+bundle)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /manager/%s = %d, want 200", bundle, rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Errorf("GET /manager/%s Content-Type = %q, want text/javascript", bundle, ct)
+	}
+}
+
+func mustDistFS(t *testing.T) fs.FS {
+	t.Helper()
+	root := distFS()
+	if root == nil {
+		t.Fatal("embedded dist is missing")
+	}
+	return root
 }
