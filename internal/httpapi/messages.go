@@ -125,6 +125,9 @@ func handleSendText(instances InstanceService, messages MessageService) http.Han
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -185,6 +188,9 @@ func handleSendLocation(instances InstanceService, messages MessageService) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 
@@ -254,6 +260,9 @@ func handleSendContact(instances InstanceService, messages MessageService) http.
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -321,6 +330,9 @@ func handleSendMedia(instances InstanceService, messages MessageService, mediaSt
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 
@@ -504,6 +516,9 @@ func handleGetMessage(instances InstanceService, messages MessageService) http.H
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -553,6 +568,9 @@ func handleListMessages(instances InstanceService, messages MessageService) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 

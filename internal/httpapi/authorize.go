@@ -3,6 +3,8 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"wzap/internal/auth"
 	"wzap/internal/model"
 )
@@ -64,6 +66,24 @@ func filterInstancesByOwner(scope auth.Scope, items []model.Instance) []model.In
 		}
 	}
 	return filtered
+}
+
+// denyForeignInstanceKey closes the 404-before-403 oracle for instance
+// credentials: a request carrying an instance key for a DIFFERENT instance
+// than id answers 403 before any database load, so probing another id
+// reveals neither existence nor timing. Other scopes (global, user sessions)
+// need the row for the ownership check and return false here; their handlers
+// keep the load-then-authorize order. It reports whether it answered.
+func denyForeignInstanceKey(w http.ResponseWriter, r *http.Request, id uuid.UUID) bool {
+	scope, ok := auth.ScopeFromContext(r.Context())
+	if !ok {
+		return false
+	}
+	if scope.Kind == auth.ScopeInstance && scope.InstanceID != id {
+		writeForbidden(w, r)
+		return true
+	}
+	return false
 }
 
 // writeForbidden answers the shared 403 envelope for a scope denial.

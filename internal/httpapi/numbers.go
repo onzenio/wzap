@@ -62,6 +62,9 @@ func handleCheckNumber(instances InstanceService, numbers NumberResolver) http.H
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		var request numberCheckRequest
 		if err := decodeJSONBody(w, r, &request); err != nil {

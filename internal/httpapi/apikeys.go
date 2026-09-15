@@ -44,6 +44,9 @@ func handleRotateAPIKey(instances InstanceService, keys storage.APIKeyRepository
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -96,6 +99,9 @@ func handleRevokeAPIKey(instances InstanceService, keys storage.APIKeyRepository
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 

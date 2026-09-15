@@ -258,15 +258,15 @@ func TestAPIKeyRotateRevokeNotFound(t *testing.T) {
 		t.Fatalf("MintToken user: %v", err)
 	}
 
-	// Load-then-404 ordering: even a forbidden scope sees 404 on a random id.
+	// Load-then-404 ordering: user/global scopes see 404 on a random id, while
+	// an instance key for another instance is denied 403 before the load.
 	t.Run("rotate unknown is not found", func(t *testing.T) {
 		for name, tc := range map[string]struct {
 			cookie *http.Cookie
 			apiKey string
 		}{
-			"global":       {apiKey: testToken},
-			"user":         {cookie: rbacSessionCookie(userToken)},
-			"instance key": {apiKey: otherKey},
+			"global": {apiKey: testToken},
+			"user":   {cookie: rbacSessionCookie(userToken)},
 		} {
 			t.Run(name, func(t *testing.T) {
 				rec := serveRBAC(t, srv, http.MethodPost, "/instances/"+unknown.String()+"/apikey/rotate", "", tc.cookie, tc.apiKey, nil)
@@ -278,6 +278,15 @@ func TestAPIKeyRotateRevokeNotFound(t *testing.T) {
 				}
 			})
 		}
+		t.Run("instance key", func(t *testing.T) {
+			rec := serveRBAC(t, srv, http.MethodPost, "/instances/"+unknown.String()+"/apikey/rotate", "", nil, otherKey, nil)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if code := errorCode(t, rec.Body.Bytes()); code != "forbidden" {
+				t.Errorf("error code = %q, want %q", code, "forbidden")
+			}
+		})
 	})
 
 	t.Run("revoke unknown is not found", func(t *testing.T) {
@@ -285,9 +294,8 @@ func TestAPIKeyRotateRevokeNotFound(t *testing.T) {
 			cookie *http.Cookie
 			apiKey string
 		}{
-			"global":       {apiKey: testToken},
-			"user":         {cookie: rbacSessionCookie(userToken)},
-			"instance key": {apiKey: otherKey},
+			"global": {apiKey: testToken},
+			"user":   {cookie: rbacSessionCookie(userToken)},
 		} {
 			t.Run(name, func(t *testing.T) {
 				rec := serveRBAC(t, srv, http.MethodDelete, "/instances/"+unknown.String()+"/apikey", "", tc.cookie, tc.apiKey, nil)
@@ -299,5 +307,14 @@ func TestAPIKeyRotateRevokeNotFound(t *testing.T) {
 				}
 			})
 		}
+		t.Run("instance key", func(t *testing.T) {
+			rec := serveRBAC(t, srv, http.MethodDelete, "/instances/"+unknown.String()+"/apikey", "", nil, otherKey, nil)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if code := errorCode(t, rec.Body.Bytes()); code != "forbidden" {
+				t.Errorf("error code = %q, want %q", code, "forbidden")
+			}
+		})
 	})
 }

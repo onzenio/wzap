@@ -115,6 +115,9 @@ func handleChatwootSet(instances InstanceService, configs ChatwootConfigStore, g
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
 			writeInstanceError(w, r, err)
@@ -220,6 +223,9 @@ func handleChatwootGet(instances InstanceService, configs ChatwootConfigStore, g
 		}
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 		stored, err := instances.Get(r.Context(), id)
@@ -364,6 +370,9 @@ func handleChatwootImport(instances InstanceService, configs ChatwootConfigStore
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
 			writeInstanceError(w, r, err)
@@ -415,6 +424,9 @@ func handleChatwootCommand(instances InstanceService, configs ChatwootConfigStor
 		}
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 		stored, err := instances.Get(r.Context(), id)

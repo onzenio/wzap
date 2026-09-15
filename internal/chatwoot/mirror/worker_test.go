@@ -216,6 +216,14 @@ func (f *fakeMessages) DeleteByInstance(_ context.Context, _ uuid.UUID) (int64, 
 	return 0, nil
 }
 
+func (f *fakeMessages) GetByChatwootID(_ context.Context, _ uuid.UUID, _ int64) (*model.ChatwootMessage, error) {
+	return nil, storage.ErrNotFound
+}
+
+func (f *fakeMessages) LatestByConversation(_ context.Context, _ uuid.UUID, _ int64) (*model.ChatwootMessage, error) {
+	return nil, storage.ErrNotFound
+}
+
 // testFixture bundles a worker with its fakes.
 type testFixture struct {
 	worker *Worker

@@ -265,6 +265,45 @@ func TestRBACInstanceKeyCannotReachOtherInstance(t *testing.T) {
 	}
 }
 
+func TestRBACInstanceKeyForeignProbeSkipsDBLoad(t *testing.T) {
+	f := newRBACFixture(t)
+	loads := 0
+	srv := New(
+		config.Config{HTTPAddr: "127.0.0.1:0", APIKey: f.globalKey, JWTSecret: testJWTSecret, MaxMediaBytes: testMaxMediaBytes},
+		discardLogger(),
+		Deps{
+			ReadyChecker: checkFunc(func(context.Context) error { return nil }),
+			Instances: &fakeInstanceService{
+				getFn: func(context.Context, uuid.UUID) (*model.Instance, error) {
+					loads++
+					return nil, instance.ErrNotFound
+				},
+				listFn: func(context.Context, int, string) ([]model.Instance, string, error) {
+					return nil, "", nil
+				},
+			},
+			Messages:    f.rbacMessages(),
+			Media:       f.rbacMedia(),
+			Numbers:     &fakeNumberResolver{},
+			Idempotency: newFakeIdempotency(),
+			Keys:        f.keys,
+			JWTSecret:   testJWTSecret,
+		},
+	)
+
+	// keyA pertence a instA; sondar instB (existente ou não) nega antes do
+	// Get: mesma resposta e nenhum load, sem sinal de existência/tempo.
+	for _, target := range []uuid.UUID{f.instB.ID, uuid.New()} {
+		rec := serveRBAC(t, srv, http.MethodGet, "/instances/"+target.String(), "", nil, f.keyA, nil)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("target %s: status = %d, want 403", target, rec.Code)
+		}
+	}
+	if loads != 0 {
+		t.Errorf("instance loads = %d, want 0 (negação antes do banco)", loads)
+	}
+}
+
 func TestRBACInstanceKeyDeniedCollections(t *testing.T) {
 	f := newRBACFixture(t)
 	srv := f.rbacServer(t)
@@ -316,8 +355,10 @@ func TestRBACRandomUUIDIsNotFound(t *testing.T) {
 	userA := rbacSessionCookie(f.userATok)
 
 	// Every instance route class shares the unknown instance id; media uses
-	// an unknown media id. Any scope asking for them gets 404 before any
-	// ownership check.
+	// an unknown media id. User and global scopes asking for them get 404
+	// before any ownership check; an instance key gets 403 without any
+	// database load (denyForeignInstanceKey fecha o oráculo 404-before-403
+	// para credenciais de instância).
 	cases := instanceRouteCases(unknown, unknownMedia)
 	creds := []struct {
 		name   string
@@ -325,7 +366,6 @@ func TestRBACRandomUUIDIsNotFound(t *testing.T) {
 		apiKey string
 	}{
 		{name: "user", cookie: userA},
-		{name: "instance key", apiKey: f.keyA},
 		{name: "global", apiKey: f.globalKey},
 	}
 	for _, cred := range creds {
@@ -366,6 +406,47 @@ func TestRBACRandomUUIDIsNotFound(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("instance key", func(t *testing.T) {
+		// Chave de instância sondando UUID desconhecido: 403 sem load
+		// (oráculo fechado), exceto download de mídia desconhecida, que
+		// falha no Open antes da checagem de dono e segue 404.
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				rec := serveRBAC(t, srv, tc.method, tc.path, tc.body, nil, f.keyA, nil)
+				wantStatus := http.StatusForbidden
+				wantCode := "forbidden"
+				if tc.name == "download media of instance" {
+					wantStatus = http.StatusNotFound
+					wantCode = "not_found"
+				}
+				if rec.Code != wantStatus {
+					t.Fatalf("%s: status = %d, want %d (body %q)", tc.name, rec.Code, wantStatus, rec.Body.String())
+				}
+				if code := errorCode(t, rec.Body.Bytes()); code != wantCode {
+					t.Errorf("%s: error code = %q, want %q", tc.name, code, wantCode)
+				}
+			})
+		}
+
+		t.Run("upload media to unknown instance", func(t *testing.T) {
+			body, formType := multipartBody(t,
+				[][2]string{{"to", "5547988359190"}, {"type", "image"}},
+				"foto.jpg", "image/jpeg", []byte("bytes"))
+			req := httptest.NewRequest(http.MethodPost,
+				"/instances/"+unknown.String()+"/messages/media", bytes.NewReader(body))
+			req.Header.Set("Content-Type", formType)
+			req.Header.Set("apikey", f.keyA)
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if code := errorCode(t, rec.Body.Bytes()); code != "forbidden" {
+				t.Errorf("error code = %q, want %q", code, "forbidden")
+			}
+		})
+	})
 }
 
 func TestRBACListFiltersByOwner(t *testing.T) {

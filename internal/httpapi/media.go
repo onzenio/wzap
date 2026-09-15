@@ -59,6 +59,10 @@ func handleGetMedia(instances InstanceService, store MediaStore) http.HandlerFun
 		}
 		defer func() { _ = body.Close() }()
 
+		// Fecha o oráculo para chaves de instância antes do load da instância.
+		if denyForeignInstanceKey(w, r, record.InstanceID) {
+			return
+		}
 		owner, err := instances.Get(r.Context(), record.InstanceID)
 		if err != nil {
 			writeInstanceError(w, r, err)

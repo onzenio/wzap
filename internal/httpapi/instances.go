@@ -349,6 +349,9 @@ func handleGetInstance(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		found, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -390,6 +393,9 @@ func handleUpdateInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 
@@ -444,6 +450,9 @@ func handleDeleteInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 

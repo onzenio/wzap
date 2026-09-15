@@ -48,6 +48,9 @@ func handleConnectInstance(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -92,6 +95,9 @@ func handleQRInstance(instances InstanceService) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if denyForeignInstanceKey(w, r, id) {
+			return
+		}
 
 		stored, err := instances.Get(r.Context(), id)
 		if err != nil {
@@ -131,6 +137,9 @@ func handleInstanceStatus(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 
@@ -173,6 +182,9 @@ func handleDisconnectInstance(instances InstanceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := instanceID(w, r)
 		if !ok {
+			return
+		}
+		if denyForeignInstanceKey(w, r, id) {
 			return
 		}
 
