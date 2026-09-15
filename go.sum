@@ -113,6 +113,8 @@ go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde h1:eMHY9dMDkNuDMWhfTbMZHbbs
 go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde/go.mod h1:z0ZZNt4hq3FZbUKnunexE/QscCx7VkLvQSvtggc/aE8=
 go.mau.fi/whatsmeow v0.0.0-20260909164725-b25a56d63729 h1:KWk0ztebP3p4nNDartuTk8NHaIIM9mLOSfYm4mcnLwo=
 go.mau.fi/whatsmeow v0.0.0-20260909164725-b25a56d63729/go.mod h1:aMd13H2xFFGH9cskcvxo4Aae+TmyFN38yw+HvsrpwVg=
+go.mau.fi/whatsmeow v0.0.0-20260915211301-f376da267f95 h1:xwn1RBsgFKCFDTLKpsdrpfgZoLX6wlfHKRBpGjnpkVI=
+go.mau.fi/whatsmeow v0.0.0-20260915211301-f376da267f95/go.mod h1:aMd13H2xFFGH9cskcvxo4Aae+TmyFN38yw+HvsrpwVg=
 go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=
 go.uber.org/multierr v1.11.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=

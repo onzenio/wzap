@@ -2,6 +2,7 @@ package whatsmeow
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,5 +103,95 @@ func TestPairingSuccessRegistersPublicJID(t *testing.T) {
 	}
 	if event.jid != jid.String() {
 		t.Errorf("connection event JID = %q, want %q", event.jid, jid.String())
+	}
+}
+
+// TestPairingTerminalChannelErrorsAreExplicit verifies that terminal QR
+// channel failures surface an explicit cause instead of the generic
+// "qr channel closed": err-client-outdated, err-scanned-without-multidevice
+// and err-unexpected-state move the session to error carrying the reason.
+func TestPairingTerminalChannelErrorsAreExplicit(t *testing.T) {
+	cases := []struct {
+		name string
+		item whatsmeow.QRChannelItem
+		want string
+	}{
+		{"client outdated", whatsmeow.QRChannelClientOutdated, "outdated"},
+		{"scanned without multidevice", whatsmeow.QRChannelScannedWithoutMultidevice, "multidevice"},
+		{"unexpected state", whatsmeow.QRChannelErrUnexpectedEvent, "unexpected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &recordingSink{}
+			sess, err := newSession(uuid.New(), &store.Device{}, nil, sink, testMediaLimit)
+			if err != nil {
+				t.Fatalf("newSession: %v", err)
+			}
+
+			pairing := make(chan whatsmeow.QRChannelItem, 4)
+			go sess.monitorQR(pairing)
+			pairing <- tc.item
+
+			waitForPairing(t, "error status", func() bool {
+				return sess.Status() == session.StatusError
+			})
+			event := sink.last(t)
+			if event.status != session.StatusError {
+				t.Fatalf("connection event status = %q, want error", event.status)
+			}
+			if !strings.Contains(event.reason, tc.want) {
+				t.Errorf("connection event reason = %q, want it to mention %q", event.reason, tc.want)
+			}
+		})
+	}
+}
+
+// TestPairingSurvivesCallerContextCancellation verifies that returning the
+// HTTP request which started pairing does not tear down the WhatsApp socket.
+// The connection must live on the pairing context and only stop when the
+// session cancels the QR flow.
+func TestPairingSurvivesCallerContextCancellation(t *testing.T) {
+	sess, err := newSession(uuid.New(), &store.Device{}, nil, nil, testMediaLimit)
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+
+	pairing := make(chan whatsmeow.QRChannelItem, 1)
+	connectedCtx := make(chan context.Context, 1)
+	sess.getQRChannelFn = func(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
+		go func() {
+			<-ctx.Done()
+			close(pairing)
+		}()
+		return pairing, nil
+	}
+	sess.connectFn = func(ctx context.Context) error {
+		connectedCtx <- ctx
+		pairing <- qrCodeItem("QR-LIVE")
+		return nil
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	code, _, err := sess.Connect(requestCtx)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if code != "QR-LIVE" {
+		t.Fatalf("QR code = %q, want QR-LIVE", code)
+	}
+
+	socketCtx := <-connectedCtx
+	cancelRequest()
+	select {
+	case <-socketCtx.Done():
+		t.Fatal("pairing socket context was cancelled with the HTTP request")
+	default:
+	}
+
+	sess.cancelQR()
+	select {
+	case <-socketCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("pairing socket context was not cancelled with the QR session")
 	}
 }

@@ -40,7 +40,11 @@ func (s *instanceSession) Connect(ctx context.Context) (string, time.Time, error
 	}
 
 	qrCtx, cancel := context.WithCancel(context.Background())
-	qrChan, err := s.client.GetQRChannel(qrCtx)
+	getQRChannel := s.getQRChannelFn
+	if getQRChannel == nil {
+		getQRChannel = s.client.GetQRChannel
+	}
+	qrChan, err := getQRChannel(qrCtx)
 	if err != nil {
 		cancel()
 		return "", time.Time{}, fmt.Errorf("open qr channel: %w", err)
@@ -52,7 +56,11 @@ func (s *instanceSession) Connect(ctx context.Context) (string, time.Time, error
 	s.firstQR = first
 	s.mu.Unlock()
 
-	if err := s.client.ConnectContext(ctx); err != nil {
+	connect := s.connectFn
+	if connect == nil {
+		connect = s.client.ConnectContext
+	}
+	if err := connect(qrCtx); err != nil {
 		cancel()
 		return "", time.Time{}, classifySessionError(err)
 	}
@@ -109,13 +117,20 @@ func (s *instanceSession) monitorQR(qrChan <-chan whatsmeow.QRChannelItem) {
 			s.setStatus(session.StatusDisconnected, "", "qr code expired")
 			return
 		case whatsmeow.QRChannelEventError:
-			s.storeQR("", time.Time{})
 			err := item.Error
 			if err == nil {
 				err = errors.New("qr pairing failed")
 			}
-			s.deliverFirstQR(qrResult{err: err})
-			s.setStatus(session.StatusError, "", err.Error())
+			s.failPairing(err.Error())
+			return
+		case whatsmeow.QRChannelClientOutdated.Event:
+			s.failPairing("whatsapp client outdated: update whatsmeow to the latest version and pair again")
+			return
+		case whatsmeow.QRChannelScannedWithoutMultidevice.Event:
+			s.failPairing("qr scanned without multidevice enabled on the phone: enable linked devices and pair again")
+			return
+		case whatsmeow.QRChannelErrUnexpectedEvent.Event:
+			s.failPairing("unexpected pairing state: the pairing already finished or the channel is stale, start a new pairing")
 			return
 		default:
 			// Passkey handoff and future intermediate events carry no code.
@@ -123,6 +138,15 @@ func (s *instanceSession) monitorQR(qrChan <-chan whatsmeow.QRChannelItem) {
 		}
 	}
 	s.setStatus(session.StatusDisconnected, "", "qr channel closed")
+}
+
+// failPairing ends the pairing with an explicit error: it clears the current
+// code, hands the cause to a caller waiting in Connect and records the reason
+// in the session status, so terminal channel failures stay diagnosable.
+func (s *instanceSession) failPairing(reason string) {
+	s.storeQR("", time.Time{})
+	s.deliverFirstQR(qrResult{err: errors.New(reason)})
+	s.setStatus(session.StatusError, "", reason)
 }
 
 // storeQR replaces the current pairing code.

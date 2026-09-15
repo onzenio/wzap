@@ -332,6 +332,11 @@ type instanceSession struct {
 	// reconnectFn brings the session online during an auto-reconnect. It
 	// defaults to connectExisting and is replaced in the transition tests.
 	reconnectFn func(ctx context.Context) error
+	// getQRChannelFn and connectFn isolate the two whatsmeow boundaries used
+	// while pairing. Tests replace them to verify the connection context
+	// without opening a real WhatsApp websocket.
+	getQRChannelFn func(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error)
+	connectFn      func(ctx context.Context) error
 	// logoutFn removes the companion device from WhatsApp. It defaults to the
 	// client Logout and is replaced in the tests to assert the attempt without
 	// a network handshake.

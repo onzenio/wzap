@@ -11,7 +11,7 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.16.6
-	go.mau.fi/whatsmeow v0.0.0-20260909164725-b25a56d63729
+	go.mau.fi/whatsmeow v0.0.0-20260915211301-f376da267f95
 	golang.org/x/crypto v0.55.0
 	google.golang.org/protobuf v1.36.12
 )
