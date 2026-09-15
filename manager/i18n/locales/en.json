@@ -239,6 +239,14 @@
     "loadFailed": "Could not load accounts.",
     "quotaLabel": "Instance quota",
     "unlimited": "Unlimited",
+    "table": {
+      "search": "Search by email",
+      "loadedCount": "{count} loaded",
+      "pageOf": "Page {page} of {pages}",
+      "noResults": "No accounts match this search.",
+      "sortAsc": "Sort {column} ascending",
+      "sortDesc": "Sort {column} descending"
+    },
     "create": {
       "title": "New account",
       "body": "The account signs in with email and password. Quota 0 means unlimited.",
