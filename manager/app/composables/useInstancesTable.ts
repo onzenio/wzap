@@ -49,46 +49,49 @@ export function useInstancesTable(
     )
   }
 
-  const ownerColumn: TableColumn<Instance> = {
-    id: 'owner',
-    accessorFn: (row: Instance) => ownerLabel(row),
-    header: t('instances.columns.owner'),
-    enableSorting: false,
-    enableHiding: true
-  }
-  // pnpm keeps @tanstack/* transitive-only (unresolvable from app code), so
-  // ColumnMeta cannot be augmented here; the admin-only marker travels as
-  // untyped meta for the page to read when wiring column visibility.
-  ownerColumn.meta = { ifAdmin: true } as unknown as TableColumn<Instance>['meta']
-
-  const columns = computed<TableColumn<Instance>[]>(() => [
-    {
-      id: 'name',
-      accessorKey: 'name',
-      header: t('instances.columns.name'),
-      enableSorting: true
-    },
-    {
-      id: 'status',
-      accessorKey: 'status',
-      header: t('instances.columns.status'),
-      enableSorting: true
-    },
-    {
-      id: 'external_ref',
-      accessorKey: 'external_ref',
-      header: t('instances.columns.externalRef'),
-      enableSorting: false
-    },
-    ownerColumn,
-    {
-      id: 'whatsapp_jid',
-      accessorKey: 'whatsapp_jid',
-      header: t('instances.columns.jid'),
+  const columns = computed<TableColumn<Instance>[]>(() => {
+    // Built inside the computed so the header follows runtime locale
+    // switches. pnpm keeps @tanstack/* transitive-only (unresolvable from
+    // app code), so ColumnMeta cannot be augmented here; the admin-only
+    // marker travels as untyped meta for the page to read when wiring
+    // column visibility.
+    const ownerColumn: TableColumn<Instance> = {
+      id: 'owner',
+      accessorFn: (row: Instance) => ownerLabel(row),
+      header: t('instances.columns.owner'),
       enableSorting: false,
       enableHiding: true
     }
-  ])
+    ownerColumn.meta = { ifAdmin: true } as unknown as TableColumn<Instance>['meta']
+    return [
+      {
+        id: 'name',
+        accessorKey: 'name',
+        header: t('instances.columns.name'),
+        enableSorting: true
+      },
+      {
+        id: 'status',
+        accessorKey: 'status',
+        header: t('instances.columns.status'),
+        enableSorting: true
+      },
+      {
+        id: 'external_ref',
+        accessorKey: 'external_ref',
+        header: t('instances.columns.externalRef'),
+        enableSorting: false
+      },
+      ownerColumn,
+      {
+        id: 'whatsapp_jid',
+        accessorKey: 'whatsapp_jid',
+        header: t('instances.columns.jid'),
+        enableSorting: false,
+        enableHiding: true
+      }
+    ]
+  })
 
   // The owner column renders for admins only; the page narrows this further
   // on small viewports (owner/whatsapp_jid hidden on mobile, as the cards do).

@@ -69,6 +69,14 @@
       "owner": "Owner",
       "jid": "WhatsApp number"
     },
+    "table": {
+      "search": "Search by name or external ref",
+      "loadedCount": "{count} loaded",
+      "pageOf": "Page {page} of {pages}",
+      "noResults": "No instances match this search.",
+      "sortAsc": "Sort {column} ascending",
+      "sortDesc": "Sort {column} descending"
+    },
     "status": {
       "disconnected": "disconnected",
       "pairing": "pairing",

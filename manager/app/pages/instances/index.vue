@@ -102,17 +102,15 @@ function sortIcon(columnId: string): string {
   return current.desc ? 'i-lucide-arrow-down-wide-narrow' : 'i-lucide-arrow-up-narrow-wide'
 }
 
-// Temporary literals, exactly the final English copy: Task 1.4 moves them to
-// instances.table.* in en.json and swaps these for t().
-const noResultsLabel = 'No instances match this search.'
-const loadedLabel = computed(() => `${items.value.length} loaded`)
-const pageLabel = computed(() => `Page ${pagination.value.pageIndex + 1} of ${pageCount.value}`)
+// Table copy lives in instances.table.* (en.json); no UI literal stays here.
+const loadedLabel = computed(() => t('instances.table.loadedCount', { count: items.value.length }))
+const pageLabel = computed(() => t('instances.table.pageOf', { page: pagination.value.pageIndex + 1, pages: pageCount.value }))
 
 function sortActionLabel(columnId: string): string {
   const current = sorting.value[0]
   const nextDesc = current?.id === columnId && !current.desc
   const column = columnId === 'status' ? t('instances.columns.status') : t('instances.columns.name')
-  return nextDesc ? `Sort ${column} descending` : `Sort ${column} ascending`
+  return nextDesc ? t('instances.table.sortDesc', { column }) : t('instances.table.sortAsc', { column })
 }
 
 function onSelectRow(_event: Event, row: TableRow<Instance>) {
@@ -234,7 +232,7 @@ await loadFirst()
         <UInput
           v-model="globalFilter"
           icon="i-lucide-search"
-          placeholder="Search by name or external ref"
+          :placeholder="t('instances.table.search')"
         />
 
         <p class="text-sm text-muted">
@@ -245,7 +243,7 @@ await loadFirst()
           :data="pagedItems"
           :columns="columns"
           :column-visibility="columnVisibility"
-          :empty="noResultsLabel"
+          :empty="t('instances.table.noResults')"
           :ui="{ tr: 'cursor-pointer' }"
           @select="onSelectRow"
         >
