@@ -126,13 +126,6 @@ useSeoMeta({
   title: 'Accounts'
 })
 
-// Canonical quota display rule (quota 0 means unlimited), mirrored by
-// useAccountsTable and AccountsTableQuotaCell — keep all three in sync.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function quotaLabel(user: AccountUser): string {
-  return user.instance_quota === 0 ? t('accounts.unlimited') : String(user.instance_quota)
-}
-
 async function load() {
   pending.value = true
   failure.value = null
