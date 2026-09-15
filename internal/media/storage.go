@@ -177,6 +177,11 @@ func (s *Storage) Open(ctx context.Context, id uuid.UUID) (io.ReadCloser, *model
 // along with its metadata, with the same presence, expiry and path-safety
 // checks as Open. It lets a consumer hand the file to something that reads it
 // directly instead of streaming it through this storage.
+//
+// TOCTOU note: the existence Stat below is a best-effort fast-fail only —
+// the file can still vanish before the consumer reads it. Callers must
+// handle that: Open maps a raced disappearance back to ErrNotFound, and the
+// media sender surfaces a session read failure that the outbox retries.
 func (s *Storage) Path(ctx context.Context, id uuid.UUID) (string, *model.Media, error) {
 	record, err := s.repo.Get(ctx, id)
 	if err != nil {

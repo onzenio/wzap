@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -96,19 +97,27 @@ func NewScheduler(deps SchedulerDeps) *Scheduler {
 }
 
 // Start runs sync cycles on the interval until ctx ends. A failed cycle
-// warns and the next tick retries; Start never returns an error.
+// warns and the next tick retries; Start never returns an error. Ticks never
+// overlap: when a cycle outlasts the interval the tick is skipped with a warn
+// instead of running two cycles concurrently over the same feeds.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.log.Info("chatwoot import scheduler started", "interval", s.interval)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	var running atomic.Bool
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if running.Swap(true) {
+				s.log.Warn("chatwoot sync lost messages skipped: previous cycle still running")
+				continue
+			}
 			if _, err := s.RunOnce(ctx); err != nil {
 				s.log.Warn("chatwoot sync lost messages failed", "error", err)
 			}
+			running.Store(false)
 		}
 	}
 }

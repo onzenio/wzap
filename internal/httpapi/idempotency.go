@@ -74,7 +74,7 @@ func Idempotency(
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if repo == nil || r.Method != http.MethodPost {
+			if r.Method != http.MethodPost {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -82,6 +82,17 @@ func Idempotency(
 			key := strings.TrimSpace(r.Header.Get(idempotencyKeyHeader))
 			if key == "" {
 				next.ServeHTTP(w, r)
+				return
+			}
+			// Sem repo não há proteção possível: wiring error fail-closed
+			// em vez de aceitar o send desprotegido. (Erros transitórios
+			// do store abaixo continuam fail-open por disponibilidade:
+			// um send nunca é derrubado porque o banco falhou.)
+			if repo == nil {
+				log.ErrorContext(r.Context(), "idempotency repository is not configured",
+					"request_id", RequestIDFromContext(r.Context()),
+				)
+				Error(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 				return
 			}
 			if len(key) > idempotencyKeyMaxLen {

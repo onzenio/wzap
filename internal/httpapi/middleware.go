@@ -112,11 +112,10 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 // middleware fail with 401. The legacy Authorization: Bearer scheme is never
 // read. The resolved auth.Scope is injected in the request context for
 // downstream handlers via auth.ContextWithScope.
-func Authenticate(globalKey string, users storage.UserRepository, keys storage.APIKeyRepository, jwtSecret string) func(http.Handler) http.Handler {
+func Authenticate(globalKey string, keys storage.APIKeyRepository, jwtSecret string) func(http.Handler) http.Handler {
 	// Session validity is JWT-only: an unusable cookie falls through per R12
-	// and user-to-instance ownership stays in the handlers (2.4), so the
-	// users repository is intentionally unused here.
-	_ = users
+	// and user-to-instance ownership stays in the handlers (2.4), so no user
+	// repository is needed here.
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if cookie, err := r.Cookie(auth.SessionCookieName); err == nil {

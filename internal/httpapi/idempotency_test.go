@@ -175,6 +175,19 @@ func TestIdempotencyWithoutKeyPassesThrough(t *testing.T) {
 	}
 }
 
+func TestIdempotencyWithoutRepoFailsClosed(t *testing.T) {
+	calls := 0
+	rec := serveIdempotency(nil, countingHandler(&calls, http.StatusAccepted, "m1"),
+		idempotencyRequest(uuid.New(), "k-nil-repo", `{"to":"5547"}`))
+
+	if calls != 0 {
+		t.Fatalf("handler calls = %d, want 0 (sem repo não executa)", calls)
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (wiring error fail-closed)", rec.Code)
+	}
+}
+
 func TestIdempotencyFirstRequestAcquiresAndCompletes(t *testing.T) {
 	repo := newFakeIdempotency()
 	id := uuid.New()

@@ -211,6 +211,7 @@ func serve() error {
 			return mirrorWorker.NotifyOperational(ctx, instanceID, text)
 		},
 		placeholder: cfg.Chatwoot.ImportPlaceholder,
+		locks:       instancelock.New(),
 	}
 	if cfg.Chatwoot.Enabled {
 		clientFor := func(connector model.ChatwootConfig) mirror.ChatwootClient {
@@ -475,6 +476,9 @@ type chatwootHistoryImporter struct {
 	clientFor   func(cfg model.ChatwootConfig) chatimport.InboxLister
 	notify      func(ctx context.Context, instanceID uuid.UUID, text string) error
 	placeholder bool
+	// locks serializa os três gatilhos (manual, auto, cron) por instância:
+	// sem isso dois runs concorrentes fariam snapshot/reset do mesmo feed.
+	locks *instancelock.Locker
 }
 
 // ImportHistory runs the manual import of instanceID.
@@ -484,8 +488,16 @@ func (a *chatwootHistoryImporter) ImportHistory(ctx context.Context, instanceID 
 
 // run imports the feed snapshot of instanceID, cutting history older than
 // since when set (the lost-messages window; zero takes the full days_limit
-// window).
+// window). Runs for the same instance serialize on locks; a cancelled wait
+// fails instead of importing concurrently.
 func (a *chatwootHistoryImporter) run(ctx context.Context, instanceID uuid.UUID, since time.Time) (int, error) {
+	if a.locks != nil {
+		release, err := a.locks.Acquire(ctx, instanceID)
+		if err != nil {
+			return 0, fmt.Errorf("chatimport: run import: %w", err)
+		}
+		defer release()
+	}
 	pool, ok := chatimport.Pool(ctx)
 	if !ok {
 		return 0, nil

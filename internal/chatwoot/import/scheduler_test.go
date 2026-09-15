@@ -160,6 +160,59 @@ func TestSchedulerRunOnceSkipsClearOnInertRun(t *testing.T) {
 
 // TestSchedulerStartTicksUntilStopped pins that Start runs the cycle on the
 // interval until the context ends.
+func TestSchedulerStartSkipsOverlappingTicks(t *testing.T) {
+	id := uuid.New()
+	var mu sync.Mutex
+	entries := 0
+	maxConcurrent := 0
+	current := 0
+	release := make(chan struct{})
+	scheduler := NewScheduler(SchedulerDeps{
+		Interval:  10 * time.Millisecond,
+		Instances: &fakeSchedulerInstances{instances: []model.Instance{{ID: id}}},
+		Configs: &fakeSchedulerConfigs{cfgs: map[uuid.UUID]*model.ChatwootConfig{
+			id: {InstanceID: id, Enabled: true, ImportMessages: true},
+		}},
+		Sessions: &fakeSchedulerSessions{sessions: map[uuid.UUID]session.Session{
+			id: sessiontest.NewSession(id, nil),
+		}},
+		Run: func(context.Context, uuid.UUID, time.Time) (int, error) {
+			mu.Lock()
+			entries++
+			current++
+			if current > maxConcurrent {
+				maxConcurrent = current
+			}
+			mu.Unlock()
+			<-release
+			mu.Lock()
+			current--
+			mu.Unlock()
+			return 0, nil
+		},
+		ClearCache: func(uuid.UUID) {},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scheduler.Start(ctx)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if maxConcurrent != 1 {
+		t.Errorf("concorrência máxima = %d, want 1 (ticks nunca sobrepõem)", maxConcurrent)
+	}
+	if entries < 1 {
+		t.Errorf("entries = %d, want >= 1", entries)
+	}
+}
+
 func TestSchedulerStartTicksUntilStopped(t *testing.T) {
 	id := uuid.New()
 	var mu sync.Mutex

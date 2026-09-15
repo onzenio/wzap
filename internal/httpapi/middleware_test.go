@@ -94,7 +94,7 @@ func TestAuthenticate(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 		rec := httptest.NewRecorder()
-		Authenticate(globalKey, nil, keys, jwtSecret)(inner).ServeHTTP(rec, req)
+		Authenticate(globalKey, keys, jwtSecret)(inner).ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			return rec, nil
 		}
@@ -215,7 +215,7 @@ func TestAuthenticate(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				})
 				rec := httptest.NewRecorder()
-				Authenticate(globalKey, nil, keys, jwtSecret)(inner).ServeHTTP(rec, req)
+				Authenticate(globalKey, keys, jwtSecret)(inner).ServeHTTP(rec, req)
 
 				if rec.Code != http.StatusUnauthorized {
 					t.Fatalf("status = %d, want %d (body %q)", rec.Code, http.StatusUnauthorized, rec.Body.String())
@@ -254,7 +254,7 @@ func TestAuthenticateRejectsEmptyGlobalKey(t *testing.T) {
 	req.Header.Set("apikey", "some-key")
 	rec := httptest.NewRecorder()
 
-	Authenticate("", nil, keys, testJWTSecret)(okHandler()).ServeHTTP(rec, req)
+	Authenticate("", keys, testJWTSecret)(okHandler()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)

@@ -102,7 +102,7 @@ func New(cfg config.Config, log *slog.Logger, deps Deps) *http.Server {
 	// the api mux sees the request: an unknown path without credential
 	// answers 401 here, while the same path with a valid credential falls
 	// through to the enveloped 404 of envelopeFallback.
-	mux.Handle("/", Authenticate(cfg.APIKey, deps.Users, deps.Keys, deps.JWTSecret)(envelopeFallback(api)))
+	mux.Handle("/", Authenticate(cfg.APIKey, deps.Keys, deps.JWTSecret)(envelopeFallback(api)))
 
 	// The Chatwoot webhook is open by design (the secret is v2), so it
 	// mounts on the outer mux outside the Authenticate guard at its exact
