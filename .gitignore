@@ -2,3 +2,9 @@
 .env
 .env.*
 !.env.example
+# Local-only impeccable UI-polish assets (project skills stay tracked).
+.github/agents/
+.github/hooks/
+.github/skills/
+.opencode/commands/
+.opencode/skills/impeccable/
