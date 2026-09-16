@@ -311,3 +311,94 @@ func TestRuntimeOnReceiptWithoutApplierIsNoOp(t *testing.T) {
 
 	runtime.OnReceipt(context.Background(), session.Receipt{InstanceID: uuid.New(), MessageIDs: []string{"wamid.1"}})
 }
+
+// debugLogBuffer returns a logger capturing Debug records and the buffer
+// holding their text rendering.
+func debugLogBuffer() (*slog.Logger, *bytes.Buffer) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return logger, &logs
+}
+
+func TestRuntimeOnConnectionLogsConnectedProjection(t *testing.T) {
+	id := uuid.New()
+	repo := newRuntimeRepo(model.Instance{
+		ID: id, Name: "loja", Status: string(session.StatusDisconnected),
+	})
+	writer := &fakeWriter{}
+	logger, logs := debugLogBuffer()
+	runtime := NewRuntime(repo, writer, nil, nil, "", 0, logger)
+
+	const jid = "5511999999999@s.whatsapp.net"
+	runtime.OnConnection(context.Background(), id, session.StatusConnected, jid, "")
+
+	out := logs.String()
+	if !strings.Contains(out, "connection change received") {
+		t.Errorf("logs = %q, want the connection entry line", out)
+	}
+	if !strings.Contains(out, "jid_present=true") {
+		t.Errorf("logs = %q, want jid_present=true on the entry line", out)
+	}
+	if !strings.Contains(out, "connection state recorded") {
+		t.Errorf("logs = %q, want the projection success line", out)
+	}
+	if !strings.Contains(out, "connected_at_set=true") {
+		t.Errorf("logs = %q, want connected_at_set=true after a connect", out)
+	}
+	if strings.Contains(out, jid) {
+		t.Errorf("logs = %q, must never contain the JID string", out)
+	}
+	if len(writer.subjects) != 1 {
+		t.Errorf("event writes = %v, want one event; logging must not change behavior", writer.subjects)
+	}
+}
+
+func TestRuntimeOnConnectionLogsFailureProjection(t *testing.T) {
+	id := uuid.New()
+	repo := newRuntimeRepo(model.Instance{
+		ID: id, Name: "loja", Status: string(session.StatusConnected),
+		WhatsAppJID: "5511@wa",
+	})
+	writer := &fakeWriter{}
+	logger, logs := debugLogBuffer()
+	runtime := NewRuntime(repo, writer, nil, nil, "", 0, logger)
+
+	runtime.OnConnection(context.Background(), id, session.StatusError, "", "temporary ban")
+
+	out := logs.String()
+	if !strings.Contains(out, "connection change received") {
+		t.Errorf("logs = %q, want the connection entry line", out)
+	}
+	if !strings.Contains(out, "jid_present=false") {
+		t.Errorf("logs = %q, want jid_present=false on the entry line", out)
+	}
+	if !strings.Contains(out, "connected_at_set=false") {
+		t.Errorf("logs = %q, want connected_at_set=false without a connect", out)
+	}
+	if len(writer.subjects) != 1 {
+		t.Errorf("event writes = %v, want one event; logging must not change behavior", writer.subjects)
+	}
+}
+
+func TestRuntimeOnConnectionLogsUnknownInstanceSkip(t *testing.T) {
+	writer := &fakeWriter{}
+	logger, logs := debugLogBuffer()
+	runtime := NewRuntime(newRuntimeRepo(), writer, nil, nil, "", 0, logger)
+
+	const jid = "5511@wa"
+	runtime.OnConnection(context.Background(), uuid.New(), session.StatusConnected, jid, "")
+
+	out := logs.String()
+	if !strings.Contains(out, "record connection change") {
+		t.Errorf("logs = %q, want the existing record error line unchanged", out)
+	}
+	if !strings.Contains(out, "skip connection event for unknown instance") {
+		t.Errorf("logs = %q, want the unknown-instance skip warning", out)
+	}
+	if strings.Contains(out, jid) {
+		t.Errorf("logs = %q, must never contain the JID string", out)
+	}
+	if len(writer.subjects) != 0 {
+		t.Errorf("event writes = %v, want none for an unknown instance", writer.subjects)
+	}
+}

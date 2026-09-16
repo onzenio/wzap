@@ -447,6 +447,7 @@ func (s *instanceSession) setStatus(status session.Status, jid, reason string) {
 		s.mu.Unlock()
 		return
 	}
+	from := s.status
 	s.status = status
 	s.lastReason = reason
 	s.terminal = status == session.StatusError || (status == session.StatusDisconnected && reason != "")
@@ -456,6 +457,13 @@ func (s *instanceSession) setStatus(status session.Status, jid, reason string) {
 	}
 	currentJID := s.jid
 	s.mu.Unlock()
+
+	s.log.Debug("session status changed",
+		"instance_id", s.instanceID, "from", from, "to", status, "jid_present", currentJID != "", "reason", reason)
+	if status == session.StatusError {
+		s.log.Warn("session entered error status",
+			"instance_id", s.instanceID, "from", from, "reason", reason)
+	}
 
 	if s.sink != nil {
 		s.sink.OnConnection(context.Background(), s.instanceID, status, currentJID, reason)
